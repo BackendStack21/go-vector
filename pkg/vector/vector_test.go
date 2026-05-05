@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestDims(t *testing.T) {
+	if got := Dims(Vector{1, 2, 3}); got != 3 {
+		t.Errorf("Dims([1,2,3]) = %d, want 3", got)
+	}
+	if got := Dims(Vector{}); got != 0 {
+		t.Errorf("Dims([]) = %d, want 0", got)
+	}
+}
+
 func TestDot(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -32,11 +32,16 @@ func Cosine(a, b Vector) float32 {
 	if len(a) != len(b) {
 		return 0
 	}
-	na, nb := Norm(a), Norm(b)
+	var dot, na, nb float32
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
 	if na == 0 || nb == 0 {
 		return 0
 	}
-	return Dot(a, b) / (na * nb)
+	return dot / float32(math.Sqrt(float64(na)*float64(nb)))
 }
 
 // CosineDist returns 1 - Cosine(a, b). Range [0, 2]. Lower = more similar.
@@ -45,13 +50,17 @@ func CosineDist(a, b Vector) float32 {
 }
 
 // Euclidean returns the Euclidean (L2) distance between a and b.
-// Returns 0 if lengths differ.
+// Zero-allocation: computes directly without intermediate vectors. Returns 0 if lengths differ.
 func Euclidean(a, b Vector) float32 {
-	d := Sub(a, b)
-	if d == nil {
+	if len(a) != len(b) {
 		return 0
 	}
-	return Norm(d)
+	var sum float64
+	for i := range a {
+		d := float64(a[i] - b[i])
+		sum += d * d
+	}
+	return float32(math.Sqrt(sum))
 }
 
 // Manhattan returns the Manhattan (L1) distance between a and b.
