@@ -1,6 +1,6 @@
 # go-vector
 
-Zero-dependency vector similarity library for Go. Pure Go `[]float32` vectors, four distance metrics, brute-force nearest-neighbor search. No CGo, no BLAS, no third-party imports — just `math` and `sort`.
+Zero-dependency vector similarity library for Go. Pure Go `[]float32` vectors, four distance metrics, text embedding via random projections, and disk-backed persistence. No CGo, no BLAS, no third-party imports.
 
 ## Install
 
@@ -36,6 +36,45 @@ func main() {
 }
 ```
 
+## Text Embedding
+
+```go
+// Fit a random projection embedder on your corpus
+rp := vector.NewRandomProjections(256)
+rp.Fit([]string{
+    "machine learning is fascinating",
+    "deep neural networks transform AI",
+    "the weather today is sunny",
+})
+
+// Embed text into a 256-dim vector
+v, _ := rp.Embed("learning about machine intelligence")
+// v is a normalized Vector suitable for cosine similarity search
+
+// Use with the store
+store := vector.NewStore(vector.CosineDistance)
+store.Add("doc1", v)
+store.Search(rp.MustEmbed("AI and learning"), 5)
+```
+
+The `Embedder` interface lets you swap backends: bring your own OpenAI, Ollama, or sentence-transformers adapter. The built-in `RandomProjections` is zero-dependency and deterministic.
+
+## Persistence
+
+```go
+// Save to disk (gob — compact binary)
+store.Save("/data/vectors.db")
+store.SaveJSON("/data/vectors.json") // human-readable alternative
+
+// Restore later
+restored := vector.NewStore(vector.CosineDistance)
+restored.Load("/data/vectors.db")
+
+// Full roundtrip — metric and all data preserved
+```
+
+Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times.
+
 ## API
 
 ### Vector Type
@@ -44,18 +83,16 @@ func main() {
 
 ### Core Operations
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `Dims(v Vector) int` | `int` | Dimensionality |
-| `Dot(a, b Vector) float32` | `float32` | Dot product (0 if lengths differ) |
-| `Norm(v Vector) float32` | `float32` | L2 / Euclidean norm |
-| `Normalize(v Vector) Vector` | `Vector` | Unit vector (nil for zero vector) |
-| `Add(a, b Vector) Vector` | `Vector` | Element-wise sum (nil if lengths differ) |
-| `Sub(a, b Vector) Vector` | `Vector` | Element-wise difference (nil if lengths differ) |
-| `Scale(v Vector, s float32) Vector` | `Vector` | Scalar multiplication |
-| `Equal(a, b Vector) bool` | `bool` | Approximate equality (ε = 1e-6) |
-| `EqualEps(a, b Vector, eps float32) bool` | `bool` | Custom epsilon equality |
-| `Clone(v Vector) Vector` | `Vector` | Deep copy |
+- `Dims(v Vector) int` — dimensionality
+- `Dot(a, b Vector) float32` — dot product (0 if lengths differ)
+- `Norm(v Vector) float32` — L2 norm
+- `Normalize(v Vector) Vector` — unit vector (nil for zero vector)
+- `Add(a, b Vector) Vector` — element-wise sum (nil if lengths differ)
+- `Sub(a, b Vector) Vector` — element-wise difference (nil if lengths differ)
+- `Scale(v Vector, s float32) Vector` — scalar multiplication
+- `Equal(a, b Vector) bool` — approximate equality (ε = 1e-6)
+- `EqualEps(a, b Vector, eps float32) bool` — custom epsilon
+- `Clone(v Vector) Vector` — deep copy
 
 ### Distance Metrics
 
@@ -66,34 +103,46 @@ vector.ManhattanDistance    // L1 distance  → [0, ∞),  lower = more similar
 vector.DotProductSimilarity // dot product  → (−∞, ∞), higher = more similar
 ```
 
-Direct functions available:
-- `Cosine(a, b)` — cosine similarity [−1, 1]
-- `CosineDist(a, b)` — 1 − cosine [0, 2]
-- `Euclidean(a, b)` — L2 distance (zero-alloc)
-- `Manhattan(a, b)` — L1 distance
-- `Distance(a, b, metric)` — metric-dispatch version
+Direct functions: `Cosine`, `CosineDist`, `Euclidean`, `Manhattan`, `Distance`.
 
 ### Vector Store
 
 ```go
 store := vector.NewStore(vector.CosineDistance)
 
-store.Add(id string, v Vector)           // insert (clones input)
-store.Search(query Vector, k int)        // top-k nearest neighbors
-store.Get(id string) Vector              // lookup by id (clone)
-store.Remove(id string) bool             // remove by id
-store.Len() int                          // count
+store.Add(id, v)           // insert (clones input)
+store.Search(query, k)     // top-k nearest neighbors
+store.Get(id)              // lookup by id (clone)
+store.Remove(id)           // remove by id
+store.Len()                // count
+store.Save(path)           // gob-encode to file
+store.Load(path)           // restore from gob file
+store.SaveJSON(path)       // JSON export
+store.LoadJSON(path)       // JSON import
 ```
 
-`Search()` returns `[]SearchResult` sorted by distance:
-- Distance metrics (Cosine, Euclidean, Manhattan): ascending order
-- DotProductSimilarity: descending order
+### Text Embedding
 
-Results include **cloned** vectors — mutations won't corrupt store state.
+```go
+type Embedder interface {
+    Embed(text string) (Vector, error)
+    Dims() int
+}
+```
+
+**Built-in: `RandomProjections`**
+
+Johnson-Lindenstrauss sparse random projection (Achlioptas 2003). Projects tokenized text into a fixed-size normalized vector. Deterministic (fixed seed), zero dependencies, ~10µs per embed.
+
+- `NewRandomProjections(outputDim int)` — create embedder
+- `Fit(corpus []string)` — build vocabulary and projection matrix
+- `Embed(text string) (Vector, error)` — embed text (L2-normalized output)
+- `VocabSize() int` — number of unique tokens in vocabulary
+- `Dims() int` — output dimensionality
 
 ## Performance
 
-All benchmarks at 1536 dimensions (typical embedding size) on AMD EPYC.
+All benchmarks at 1536 dimensions on AMD EPYC.
 
 ```
 BenchmarkDot-6                  7.5 µs     0 allocs
@@ -105,9 +154,7 @@ BenchmarkStoreSearch1000-6     28.5 ms    74 KB
 BenchmarkStoreSearch10000-6   315  ms   185 KB
 ```
 
-Distance functions are **zero-allocation**. Cosine and Euclidean compute in a single pass over the data.
-
-Search is brute-force O(n·d). At 1536d, expect ~3ms per 100 vectors. Suitable for datasets up to ~100K vectors.
+Distance functions are **zero-allocation**. Cosine and Euclidean compute in a single pass.
 
 ## Security
 
@@ -116,23 +163,18 @@ Search is brute-force O(n·d). At 1536d, expect ~3ms per 100 vectors. Suitable f
 | Attack surface | 🟢 Minimal — pure float32 math, no CGo, no syscalls, no I/O |
 | Panics | 🟢 None — all edge cases return zero/nil |
 | Memory safety | 🟢 All outputs cloned, no shared backing arrays |
-| Float overflow | 🟡 Documented — define `MaxSafeDims = 1M`; normalize large-magnitude vectors |
+| Persistence safety | 🟡 `Load` replaces all data; atomicity is caller's responsibility |
+| Float overflow | 🟡 Documented — `MaxSafeDims = 1M`; normalize large-magnitude vectors |
 | Thread safety | 🟡 Store is read-safe but not write-safe — guard with `sync.Mutex` |
-
-`SearchResult.Vector` is a `[]float32` — it's a clone from the store, but if your application mutates float32 slices returned by Search, clone them again. The store's internal state is never exposed.
-
-### Float32 Precision
-
-Dot products on high-dimensional vectors with large magnitudes (>1e19) can overflow float32 (±3.4e38). For typical embedding use (normalized vectors, dims < 10K), this is not a concern. If your vectors have large unnormalized magnitudes, normalize before insertion.
 
 ## Design
 
-- **Zero dependencies** — `go.mod` has no `require` block. `math` + `sort` only.
+- **Zero dependencies** — `go.mod` has no `require` block
 - **Type alias** — `Vector` is `[]float32`, interoperable with any `[]float32` data
 - **Brute-force search** — O(n·d) per query; pair with an approximate index for n > 100K
-- **Clone safety** — `Get()`, `Search()`, and `Add()` all clone — no accidental mutation
+- **Clone safety** — `Get()`, `Search()`, and `Add()` all clone
 - **Graceful degradation** — mismatched lengths return zero/nil, never panic
-- **Single-pass** — Cosine and Euclidean compute in one pass without intermediate allocations
+- **Deterministic embeddings** — fixed seed (42) for reproducible results
 
 ## License
 

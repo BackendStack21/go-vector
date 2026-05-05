@@ -271,11 +271,31 @@
     .footer a { color: var(--text-secondary); }
     .footer a:hover { color: var(--text-primary); }
 
+    /* === Use Cases === */
+    .usecase {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center;
+      padding: 48px 0; border-bottom: 1px solid var(--border-subtle);
+    }
+    .usecase:last-child { border-bottom: none; }
+    .usecase h3 { font-size: 24px; font-weight: 600; letter-spacing: -0.6px; margin-bottom: 8px; }
+    .usecase p { font-size: 15px; color: var(--text-secondary); line-height: 1.7; font-weight: 300; }
+    .code-mini {
+      background: var(--bg-code); border: 1px solid var(--border-card);
+      border-radius: var(--radius-md); padding: 20px; overflow-x: auto;
+      font-size: 12px; line-height: 1.7; color: #c9d1d9;
+    }
+    .code-mini .kw { color: #ff7b72; }
+    .code-mini .str { color: #a5d6ff; }
+    .code-mini .fn { color: #d2a8ff; }
+    .code-mini .cmt { color: #8b949e; }
+    .code-mini .pkg { color: #7ee787; }
+
     /* === Responsive === */
     @media (max-width: 768px) {
       .hero h1 { font-size: 40px; letter-spacing: -1.6px; }
       .grid-3, .grid-2 { grid-template-columns: 1fr; }
       .stats { grid-template-columns: repeat(2, 1fr); }
+      .usecase { grid-template-columns: 1fr; gap: 24px; }
       .section h2 { font-size: 30px; }
       .section { padding: 64px 0; }
       .nav-links { display: none; }
@@ -297,6 +317,8 @@
     </a>
     <div class="nav-links">
       <a href="#features">Features</a>
+      <a href="#embedding">Embedding</a>
+      <a href="#persistence">Persistence</a>
       <a href="#performance">Performance</a>
       <a href="#security">Security</a>
       <a href="https://github.com/BackendStack21/go-vector" target="_blank" rel="noopener">GitHub</a>
@@ -308,9 +330,9 @@
 <!-- Hero -->
 <section class="hero">
   <div class="container">
-    <div class="hero-badge"><span class="dot"></span> Zero dependencies. Pure Go. Single pass.</div>
+    <div class="hero-badge"><span class="dot"></span> Zero dependencies. Text embedding. Disk persistence.</div>
     <h1>Vector similarity<br>in <span class="accent">pure Go</span></h1>
-    <p>Cosine, Euclidean, Manhattan. Brute-force nearest-neighbor search. Zero allocations on distance computation. Just <code>math</code> and <code>sort</code>.</p>
+    <p>Cosine, Euclidean, Manhattan. Text embedding. Disk persistence. Brute-force nearest-neighbor search. Zero allocations on distance computation. All pure Go.</p>
     <div class="hero-actions">
       <a href="#install" class="btn btn-primary">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v10M4 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -367,7 +389,7 @@
         <div class="label">allocations per distance</div>
       </div>
       <div class="stat">
-        <div class="num">99.1%</div>
+        <div class="num">96.8%</div>
         <div class="label">test coverage</div>
       </div>
     </div>
@@ -408,25 +430,90 @@
     <div class="grid-3">
       <div class="card">
         <div class="card-icon orange">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         </div>
-        <h3>Zero Panics</h3>
-        <p>Mismatched dimensions return zero/nil. Zero vectors handled gracefully. No recovery needed.</p>
+        <h3>Text Embedding</h3>
+        <p>Built-in Random Projections embedder (Johnson-Lindenstrauss). Bring your own OpenAI or Ollama adapter via the <code>Embedder</code> interface.</p>
       </div>
       <div class="card">
         <div class="card-icon blue">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         </div>
-        <h3>Clone-Safe</h3>
-        <p>Store internals never leak. Get and Search always return deep copies. No shared backing arrays.</p>
+        <h3>Disk Persistence</h3>
+        <p>Gob-encode your store to disk. Full roundtrip with metric preservation. JSON export for debugging. ~60MB per 10K vectors at 1536d.</p>
       </div>
       <div class="card">
         <div class="card-icon green">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         </div>
         <h3>Minimal Surface</h3>
-        <p>Only <code>math</code> and <code>sort</code>. No CGo, no BLAS, no syscalls, no I/O. Compiles anywhere Go runs.</p>
+        <p>Standard library only. No CGo, no BLAS, no syscalls, no I/O. Compiles anywhere Go runs.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- Embedding -->
+<section class="section" id="embedding">
+  <div class="container">
+    <div class="section-label">Text Embedding</div>
+    <h2>From text to vectors<br>in one call</h2>
+    <p class="lead">Built-in Random Projections embedder using the Johnson-Lindenstrauss lemma. Deterministic, zero-dependency, ~10µs per document. Or bring your own via the <code>Embedder</code> interface.</p>
+
+    <div class="usecase">
+      <div>
+        <h3>Built-in: Random Projections</h3>
+        <p>Sparse random projection matrix — each vocabulary token contributes to ~33% of output dimensions. Vocabulary built from your corpus. Output always L2-normalized.</p>
+      </div>
+      <div class="code-mini"><pre><span class="kw">rp</span> := vector.<span class="fn">NewRandomProjections</span>(<span class="fn">256</span>)
+<span class="kw">rp</span>.<span class="fn">Fit</span>(corpus)
+
+<span class="kw">v</span>, _ := <span class="kw">rp</span>.<span class="fn">Embed</span>(<span class="str">"machine learning"</span>)
+<span class="cmt">// v is a 256-dim normalized Vector</span></pre></div>
+    </div>
+
+    <div class="usecase">
+      <div>
+        <h3>Swap backends anytime</h3>
+        <p>Implement the <code>Embedder</code> interface to plug in OpenAI, Ollama, or sentence-transformers. One method to implement per backend. Your search code never changes.</p>
+      </div>
+      <div class="code-mini"><pre><span class="kw">type</span> <span class="pkg">Embedder</span> <span class="kw">interface</span> {
+    <span class="fn">Embed</span>(text <span class="type">string</span>) (<span class="pkg">Vector</span>, <span class="type">error</span>)
+    <span class="fn">Dims</span>() <span class="type">int</span>
+}
+
+<span class="cmt">// OpenAIEmbedder, OllamaEmbedder, etc.</span>
+<span class="kw">var</span> emb <span class="pkg">vector.Embedder</span> = <span class="fn">NewOpenAIEmbedder</span>()</pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- Persistence -->
+<section class="section" id="persistence">
+  <div class="container">
+    <div class="section-label">Persistence</div>
+    <h2>Save. Load. Repeat.</h2>
+    <p class="lead">Gob-encode your entire store to a file. Restore with metric and all data intact. JSON export for debugging and inspection.</p>
+
+    <div class="usecase">
+      <div>
+        <h3>Gob — compact and fast</h3>
+        <p>Binary encoding via <code>encoding/gob</code>. Full roundtrip preserves IDs, vectors, and metric. ~200ms save for 10K vectors at 1536d.</p>
+      </div>
+      <div class="code-mini"><pre>store.<span class="fn">Save</span>(<span class="str">"/data/vectors.db"</span>)
+
+restored := vector.<span class="fn">NewStore</span>(...)
+restored.<span class="fn">Load</span>(<span class="str">"/data/vectors.db"</span>)
+<span class="cmt">// all data + metric restored</span></pre></div>
+    </div>
+
+    <div class="usecase">
+      <div>
+        <h3>JSON — human-readable</h3>
+        <p>Export as indented JSON for debugging, inspection, or cross-language interop. Same roundtrip guarantees.</p>
+      </div>
+      <div class="code-mini"><pre>store.<span class="fn">SaveJSON</span>(<span class="str">"/data/vectors.json"</span>)
+restored.<span class="fn">LoadJSON</span>(<span class="str">"/data/vectors.json"</span>)</pre></div>
     </div>
   </div>
 </section>

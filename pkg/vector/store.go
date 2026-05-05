@@ -1,6 +1,15 @@
 package vector
 
-import "sort"
+import (
+	"encoding/gob"
+	"encoding/json"
+	"os"
+	"sort"
+)
+
+func init() {
+	gob.Register(Vector{})
+}
 
 // SearchResult holds a single nearest-neighbor search result.
 type SearchResult struct {
@@ -103,4 +112,85 @@ func (s *Store) Remove(id string) bool {
 		}
 	}
 	return false
+}
+
+// storeData is the serializable representation of a Store for persistence.
+type storeData struct {
+	Vectors []Vector
+	IDs     []string
+	Metric  Metric
+}
+
+// Save writes the store to a file using Go's gob encoder (compact binary format).
+// Overwrites the file if it exists.
+func (s *Store) Save(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := storeData{
+		Vectors: s.vectors,
+		IDs:     s.ids,
+		Metric:  s.metric,
+	}
+	return gob.NewEncoder(f).Encode(data)
+}
+
+// Load restores the store from a gob-encoded file. Existing data in the store
+// is replaced. Returns an error if the file cannot be read or decoded.
+func (s *Store) Load(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var data storeData
+	if err := gob.NewDecoder(f).Decode(&data); err != nil {
+		return err
+	}
+
+	s.vectors = data.Vectors
+	s.ids = data.IDs
+	s.metric = data.Metric
+	return nil
+}
+
+// SaveJSON writes the store to a file as human-readable JSON.
+func (s *Store) SaveJSON(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := storeData{
+		Vectors: s.vectors,
+		IDs:     s.ids,
+		Metric:  s.metric,
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	return enc.Encode(data)
+}
+
+// LoadJSON restores the store from a JSON file. Existing data is replaced.
+func (s *Store) LoadJSON(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var data storeData
+	if err := json.NewDecoder(f).Decode(&data); err != nil {
+		return err
+	}
+
+	s.vectors = data.Vectors
+	s.ids = data.IDs
+	s.metric = data.Metric
+	return nil
 }
