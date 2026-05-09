@@ -70,12 +70,16 @@
     .perf-table .alloc { color: var(--green); }
 
     /* Security card */
+    .security-card { max-width: 720px; }
+    .security-card.card:hover { transform: none; border-color: var(--border-card); }
     .security-row {
-      display: flex; align-items: center; gap: 12px;
+      display: grid; grid-template-columns: 56px 1fr 1fr; gap: 12px;
       padding: 12px 0; border-bottom: 1px solid var(--border-subtle);
-      font-size: 14px;
+      font-size: 14px; align-items: center;
     }
     .security-row:last-child { border-bottom: none; }
+    .security-row .desc { color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+    @media (max-width: 640px) { .security-row { grid-template-columns: 56px 1fr; } }
     .badge {
       display: inline-flex; align-items: center;
       font-family: var(--font-mono); font-size: 10px; font-weight: 600;
@@ -355,31 +359,31 @@ restored.<span class="fn">LoadJSON</span>(<span class="str">"/data/vectors.json"
     <h2>Minimal attack surface</h2>
     <p class="lead">Pure float32 math. No CGo, no syscalls, no I/O, no network. Every edge case returns zero/nil — the library never panics.</p>
 
-    <div class="card" style="max-width: 720px;">
+    <div class="card security-card">
       <div class="security-row">
         <span class="badge g">SAFE</span>
         <span style="flex: 1;">Attack surface</span>
-        <span style="color: var(--text-secondary);">Pure float32 operations — no injection, no deserialization, no file access</span>
+        <span class="desc">Pure float32 operations — no injection, no deserialization, no file access</span>
       </div>
       <div class="security-row">
         <span class="badge g">SAFE</span>
         <span style="flex: 1;">Panic-free</span>
-        <span style="color: var(--text-secondary);">All edge cases (mismatched lengths, zero vectors, empty stores) return zero/nil</span>
+        <span class="desc">All edge cases (mismatched lengths, zero vectors, empty stores) return zero/nil</span>
       </div>
       <div class="security-row">
         <span class="badge g">SAFE</span>
         <span style="flex: 1;">Memory hygiene</span>
-        <span style="color: var(--text-secondary);">Store outputs are always cloned. Internal state never leaks.</span>
+        <span class="desc">Store outputs are always cloned. Internal state never leaks.</span>
       </div>
       <div class="security-row">
         <span class="badge y">AWARE</span>
         <span style="flex: 1;">Float32 overflow</span>
-        <span style="color: var(--text-secondary);">Dot products of large vectors (>10⁵ dims with large magnitudes) can overflow. Normalize first.</span>
+        <span class="desc">Dot products of large vectors (>10⁵ dims with large magnitudes) can overflow. Normalize first.</span>
       </div>
       <div class="security-row">
         <span class="badge y">AWARE</span>
         <span style="flex: 1;">Thread safety</span>
-        <span style="color: var(--text-secondary);">Store is read-safe but not write-safe concurrently. Guard with <code>sync.Mutex</code>.</span>
+        <span class="desc">Store is read-safe but not write-safe concurrently. Guard with <code>sync.Mutex</code>.</span>
       </div>
     </div>
   </div>
@@ -387,10 +391,10 @@ restored.<span class="fn">LoadJSON</span>(<span class="str">"/data/vectors.json"
 
 <!-- Install -->
 <section class="section" id="install" style="padding-top: 0;">
-  <div class="container">
+    <div class="container" style="text-align: center;">
     <div class="section-label">Get Started</div>
     <h2>Install</h2>
-    <p class="lead">One import. Zero dependencies.</p>
+    <p class="lead" style="margin: 16px auto 0;">One import. Zero dependencies.</p>
 
     <div class="install-box">
       <span class="prompt">$</span>
