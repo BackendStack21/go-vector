@@ -61,6 +61,8 @@ The `Embedder` interface lets you swap backends: bring your own OpenAI, Ollama, 
 
 ## Persistence
 
+### Store Persistence
+
 ```go
 // Save to disk (gob — compact binary)
 store.Save("/data/vectors.db")
@@ -74,6 +76,34 @@ restored.Load("/data/vectors.db")
 ```
 
 Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times.
+
+### Embedder Persistence
+
+```go
+// Fit an embedder on your corpus
+rp := vector.NewRandomProjections(256)
+rp.Fit([]string{
+    "machine learning is fascinating",
+    "deep neural networks transform AI",
+    "the weather today is sunny",
+})
+
+// Save the embedder state — vocab, projection matrix, dimensions
+if err := rp.SaveEmbedder("/data/embedder.gob"); err != nil {
+    log.Fatal(err)
+}
+
+// Later — load without refitting
+restored, err := vector.LoadEmbedder("/data/embedder.gob")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Embeddings are deterministic — same text, same vector
+v, _ := restored.Embed("machine learning")
+```
+
+`SaveEmbedder` preserves the vocabulary, projection matrix, output dimension, and scaling factor. `LoadEmbedder` reconstructs a ready-to-use `*RandomProjections` that produces identical vectors to the original.
 
 ## API
 
@@ -139,6 +169,8 @@ Johnson-Lindenstrauss sparse random projection (Achlioptas 2003). Projects token
 - `Embed(text string) (Vector, error)` — embed text (L2-normalized output)
 - `VocabSize() int` — number of unique tokens in vocabulary
 - `Dims() int` — output dimensionality
+- `SaveEmbedder(path string) error` — persist embedder state to gob file
+- `LoadEmbedder(path string) (*RandomProjections, error)` — restore embedder from gob file
 
 ## Performance
 

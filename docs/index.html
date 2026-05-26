@@ -372,6 +372,17 @@ restored.<span class="fn">Load</span>(<span class="str">"/data/vectors.db"</span
       <div class="code-mini"><pre>store.<span class="fn">SaveJSON</span>(<span class="str">"/data/vectors.json"</span>)
 restored.<span class="fn">LoadJSON</span>(<span class="str">"/data/vectors.json"</span>)</pre></div>
     </div>
+
+    <div class="usecase">
+      <div>
+        <h3>Embedder state persistence</h3>
+        <p>Save and restore the <code>RandomProjections</code> embedder — vocabulary, projection matrix, dimensions. No refitting needed across restarts.</p>
+      </div>
+      <div class="code-mini"><pre>rp.<span class="fn">SaveEmbedder</span>(<span class="str">"/data/embedder.gob"</span>)
+
+restored, _ := <span class="pkg">vector</span>.<span class="fn">LoadEmbedder</span>(<span class="str">"/data/embedder.gob"</span>)
+<span class="cmt">// Same text → identical vector</span></pre></div>
+    </div>
   </div>
 </section>
 
