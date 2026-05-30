@@ -3,6 +3,7 @@ package vector
 import (
 	"encoding/gob"
 	"encoding/json"
+	"math"
 	"os"
 	"sort"
 )
@@ -47,46 +48,120 @@ func (s *Store) Len() int {
 // If k > Len(), all vectors are returned.
 // If k <= 0, returns nil.
 func (s *Store) Search(query Vector, k int) []SearchResult {
-	if k <= 0 || len(s.vectors) == 0 {
+	n := len(s.vectors)
+	if k <= 0 || n == 0 {
 		return nil
 	}
-
-	// Compute all distances.
-	distances := make([]float32, len(s.vectors))
-	for i := range s.vectors {
-		distances[i] = Distance(query, s.vectors[i], s.metric)
+	if k > n {
+		k = n
 	}
 
-	// Collect indices and sort by distance.
-	indices := make([]int, len(s.vectors))
-	for i := range indices {
-		indices[i] = i
+	asc := s.metric.Ascending()
+
+	// scored pairs a stored-vector index with its distance/similarity score.
+	type scored struct {
+		idx   int
+		score float32
 	}
 
-	if s.metric.Ascending() {
-		sort.Slice(indices, func(i, j int) bool {
-			return distances[indices[i]] < distances[indices[j]]
-		})
-	} else {
-		sort.Slice(indices, func(i, j int) bool {
-			return distances[indices[i]] > distances[indices[j]]
-		})
+	// worse reports whether score a ranks below score b for this metric, i.e.
+	// a is the better eviction candidate. For distances (ascending) a larger
+	// score is worse; for similarities a smaller score is worse.
+	worse := func(a, b float32) bool {
+		if asc {
+			return a > b
+		}
+		return a < b
 	}
 
-	if k > len(indices) {
-		k = len(indices)
+	// Maintain a bounded heap of the best k results seen so far. The root is
+	// always the worst of the kept set, so a better candidate evicts it in
+	// O(log k) — overall O(n·log k) versus a full O(n·log n) sort, and with no
+	// reflection (sort.Slice) on the hot path.
+	heap := make([]scored, 0, k)
+	siftUp := func(i int) {
+		for i > 0 {
+			parent := (i - 1) / 2
+			if !worse(heap[parent].score, heap[i].score) {
+				break
+			}
+			heap[parent], heap[i] = heap[i], heap[parent]
+			i = parent
+		}
+	}
+	siftDown := func() {
+		i := 0
+		for {
+			l, r, worst := 2*i+1, 2*i+2, i
+			if l < len(heap) && worse(heap[worst].score, heap[l].score) {
+				worst = l
+			}
+			if r < len(heap) && worse(heap[worst].score, heap[r].score) {
+				worst = r
+			}
+			if worst == i {
+				break
+			}
+			heap[i], heap[worst] = heap[worst], heap[i]
+			i = worst
+		}
 	}
 
-	results := make([]SearchResult, k)
-	for i := 0; i < k; i++ {
-		idx := indices[i]
+	scoreFn := s.scorer(query)
+	for i := 0; i < n; i++ {
+		score := scoreFn(s.vectors[i])
+		if len(heap) < k {
+			heap = append(heap, scored{i, score})
+			siftUp(len(heap) - 1)
+		} else if worse(heap[0].score, score) {
+			// Candidate beats the current worst kept result.
+			heap[0] = scored{i, score}
+			siftDown()
+		}
+	}
+
+	// Heap holds the top k unordered; sort best-first for the caller.
+	sort.Slice(heap, func(i, j int) bool {
+		return worse(heap[j].score, heap[i].score)
+	})
+
+	results := make([]SearchResult, len(heap))
+	for i, h := range heap {
 		results[i] = SearchResult{
-			ID:       s.ids[idx],
-			Distance: distances[idx],
-			Vector:   Clone(s.vectors[idx]),
+			ID:       s.ids[h.idx],
+			Distance: h.score,
+			Vector:   Clone(s.vectors[h.idx]),
 		}
 	}
 	return results
+}
+
+// scorer returns a closure that scores a stored vector against query under the
+// store's metric. For CosineDistance the query's self–dot product is computed
+// once here rather than re-derived for every stored vector inside Cosine.
+func (s *Store) scorer(query Vector) func(Vector) float32 {
+	if s.metric != CosineDistance {
+		return func(v Vector) float32 { return Distance(query, v, s.metric) }
+	}
+	var qq float32
+	for _, x := range query {
+		qq += x * x
+	}
+	qqf := float64(qq)
+	return func(v Vector) float32 {
+		if len(v) != len(query) || qq == 0 {
+			return 1 // CosineDist of a zero/mismatched vector: 1 - 0
+		}
+		var dot, vv float32
+		for i := range query {
+			dot += query[i] * v[i]
+			vv += v[i] * v[i]
+		}
+		if vv == 0 {
+			return 1
+		}
+		return 1 - dot/float32(math.Sqrt(qqf*float64(vv)))
+	}
 }
 
 // Get returns the vector for the given id, or nil if not found.

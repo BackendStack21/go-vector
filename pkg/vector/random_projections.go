@@ -74,8 +74,9 @@ func (rp *RandomProjections) generateProjection() {
 	rng := rand.New(rand.NewSource(42)) // deterministic seed for reproducibility
 
 	for i := 0; i < V; i++ {
-		// Expected non-zero entries per row: D/3
-		var entries []projEntry
+		// Expected non-zero entries per row: D/3. Preallocate to avoid the
+		// append growth churn while filling each sparse row.
+		entries := make([]projEntry, 0, D/3+1)
 		for j := 0; j < D; j++ {
 			r := rng.Float64()
 			if r < 1.0/6.0 {
@@ -121,10 +122,11 @@ func (rp *RandomProjections) VocabSize() int { return len(rp.tokens) }
 // tokenize splits text into lowercase tokens, filtering non-letters and
 // tokens shorter than 2 characters.
 func tokenize(text string) []string {
-	var tokens []string
-	for _, token := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+	fields := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
+	})
+	tokens := make([]string, 0, len(fields))
+	for _, token := range fields {
 		if len(token) >= 2 {
 			tokens = append(tokens, token)
 		}

@@ -71,7 +71,11 @@ func Manhattan(a, b Vector) float32 {
 	}
 	var sum float32
 	for i := range a {
-		sum += float32(math.Abs(float64(a[i] - b[i])))
+		d := a[i] - b[i]
+		if d < 0 {
+			d = -d
+		}
+		sum += d
 	}
 	return sum
 }
