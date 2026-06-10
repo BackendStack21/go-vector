@@ -1,16 +1,21 @@
 # AGENTS.md — go-vector
 
-Zero-dependency vector similarity library. Pure Go.
+Vector similarity library. Core package is zero-dependency pure Go; optional `pkg/onnx` runs local neural models.
 
 ## Project Structure
 
 ```
-pkg/vector/                  ← library code
+pkg/vector/                  ← core library (zero-dependency, pure Go)
   vector.go                  Vector type, Dot, Norm, Normalize, Add, Sub, Scale, Equal, EqualEps, Clone, Dims
   similarity.go              Metric enum, Cosine, CosineDist, Euclidean, Manhattan, Distance
   store.go                   Store: NN search + Gob/JSON persistence (Save/Load/SaveJSON/LoadJSON)
   embedder.go                Embedder interface
+  http_embedder.go           HTTPEmbedder: OpenAI-compatible embeddings API adapter (stdlib net/http)
   random_projections.go      RandomProjections: sparse JL projection + tokenizer
+pkg/onnx/                    ← local neural embeddings (depends on onnxruntime_go + x/text, CGo)
+  embedder.go                Embedder: ONNX session, mean pooling, L2 normalization
+  tokenizer.go               Pure-Go BERT WordPiece tokenizer (vocab.txt)
+  testdata/                  Model files for tests (gitignored; fetch with `make model`)
 cmd/go-vector/               ← minimal CLI demo
 docs/                        ← GitHub Pages landing page
   index.html                 Dark-themed single-page site
@@ -19,7 +24,8 @@ docs/                        ← GitHub Pages landing page
 
 ## Conventions
 
-- **Zero dependencies** — never add to go.mod. stdlib only: `math`, `sort`, `encoding/gob`, `encoding/json`, `os`, `strings`, `unicode`, `math/rand`.
+- **`pkg/vector` stays zero-dependency** — it must never import anything beyond stdlib: `math`, `sort`, `encoding/gob`, `encoding/json`, `os`, `strings`, `unicode`, `math/rand`, `net/http` (HTTPEmbedder). Heavyweight integrations (CGo, third-party) live in sibling packages like `pkg/onnx` so users who don't import them pay nothing.
+- **`pkg/onnx` carries the only third-party deps** — `github.com/yalue/onnxruntime_go` (CGo binding) and `golang.org/x/text` (NFD for accent stripping). It also needs the ONNX Runtime shared library at runtime (`brew install onnxruntime`).
 - **Vector = []float32** — no struct, no interface, just a slice.
 - **Mismatched lengths → zero** — return zero/nil rather than panicking.
 - **Clone on output** — Get() and Search() return copies. Store.Add() clones on insert.

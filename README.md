@@ -1,6 +1,6 @@
 # go-vector
 
-Zero-dependency vector similarity library for Go. Pure Go `[]float32` vectors, four distance metrics, text embedding via random projections, and disk-backed persistence. No CGo, no BLAS, no third-party imports.
+Vector similarity library for Go. Pure Go `[]float32` vectors, four distance metrics, text embedding (random projections, OpenAI-compatible APIs, or local ONNX models), and disk-backed persistence. The core `pkg/vector` package is zero-dependency — no CGo, no BLAS, no third-party imports; the optional `pkg/onnx` package adds local neural embeddings via ONNX Runtime.
 
 ## Install
 
@@ -57,7 +57,69 @@ store.Add("doc1", v)
 store.Search(rp.MustEmbed("AI and learning"), 5)
 ```
 
-The `Embedder` interface lets you swap backends: bring your own OpenAI, Ollama, or sentence-transformers adapter. The built-in `RandomProjections` is zero-dependency and deterministic.
+The `Embedder` interface lets you swap backends. The built-in `RandomProjections` is zero-dependency and deterministic.
+
+### Real Embeddings (OpenAI, Ollama, and friends)
+
+`HTTPEmbedder` connects to any service speaking the OpenAI-compatible embeddings protocol — OpenAI, Ollama, LM Studio, Voyage AI, llama.cpp server, vLLM — using only `net/http`, so the library stays dependency-free.
+
+```go
+// OpenAI
+e := vector.NewHTTPEmbedder("https://api.openai.com/v1", "text-embedding-3-small", 1536,
+    vector.WithAPIKey(os.Getenv("OPENAI_API_KEY")))
+
+// Ollama (local, free) — pass 0 to infer dims from the first response
+e := vector.NewHTTPEmbedder("http://localhost:11434/v1", "nomic-embed-text", 0)
+
+// Index a corpus in one round-trip, then search semantically
+docs := []string{"cats are great pets", "the stock market rallied", "dogs are loyal companions"}
+vecs, err := e.EmbedBatch(docs)
+if err != nil { /* handle network/API errors */ }
+
+store := vector.NewStore(vector.CosineDistance)
+for i, doc := range docs {
+    store.Add(doc, vecs[i])
+}
+
+q, _ := e.Embed("animals that live with people")
+results := store.Search(q, 2) // → the cat and dog docs
+```
+
+Options: `WithAPIKey` (Bearer auth), `WithHeader` (e.g. Azure's `api-key`), `WithHTTPClient` (custom timeout/proxy; default 30s), `WithNormalize` (L2-normalize responses — useful with `DotProductSimilarity` on backends that don't normalize, such as Ollama). Context-aware variants `EmbedContext` / `EmbedBatchContext` support cancellation and deadlines.
+
+### Local Neural Embeddings (ONNX)
+
+The `pkg/onnx` package runs transformer embedding models fully in-process via ONNX Runtime — no server, no API key, deterministic output. It lives in a separate package so the core `pkg/vector` stays pure Go: importing `pkg/onnx` is what pulls in the ONNX Runtime binding (CGo).
+
+Setup: install the ONNX Runtime shared library (`brew install onnxruntime` on macOS, or download from the [onnxruntime releases](https://github.com/microsoft/onnxruntime/releases)), then download a model — e.g. [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2): `onnx/model.onnx` and `vocab.txt`.
+
+```go
+import "github.com/BackendStack21/go-vector/pkg/onnx"
+
+e, err := onnx.New("model.onnx", "vocab.txt")
+if err != nil { ... }
+defer e.Close()
+
+vecs, _ := e.EmbedBatch([]string{
+    "cats are wonderful pets",
+    "the federal reserve raised interest rates",
+}) // 384-dim, L2-normalized, real semantics
+
+store := vector.NewStore(vector.CosineDistance)
+store.Add("doc0", vecs[0])
+store.Add("doc1", vecs[1])
+
+q, _ := e.Embed("animals that people keep at home")
+store.Search(q, 1) // → doc0
+```
+
+Any BERT-style export works (inputs `input_ids`/`attention_mask`/`token_type_ids`; output `last_hidden_state` mean-pooled automatically, or a pre-pooled `sentence_embedding`). Tokenization is a pure-Go BERT WordPiece implementation — no Python, no Rust tokenizer. Options: `WithLibraryPath` (ONNX Runtime location; also honors `ONNXRUNTIME_SHARED_LIBRARY_PATH`), `WithMaxLength` (default 256), `WithCasedVocab`.
+
+Try it end to end — downloads the model, embeds a corpus, and answers semantic queries (see `cmd/onnx-demo/`):
+
+```bash
+make model && make demo-onnx
+```
 
 ## Persistence
 
@@ -171,6 +233,16 @@ Johnson-Lindenstrauss sparse random projection (Achlioptas 2003). Projects token
 - `Dims() int` — output dimensionality
 - `SaveEmbedder(path string) error` — persist embedder state to gob file
 - `LoadEmbedder(path string) (*RandomProjections, error)` — restore embedder from gob file
+
+**Built-in: `HTTPEmbedder`**
+
+Adapter for any OpenAI-compatible embeddings API (OpenAI, Ollama, LM Studio, Voyage AI, vLLM). stdlib `net/http` only — no SDK dependency.
+
+- `NewHTTPEmbedder(baseURL, model string, dims int, opts ...HTTPEmbedderOption)` — create embedder; `dims = 0` infers from the first response
+- `Embed(text string) (Vector, error)` / `EmbedContext(ctx, text)` — embed one text
+- `EmbedBatch(texts []string) ([]Vector, error)` / `EmbedBatchContext(ctx, texts)` — embed many texts in one API call
+- `Dims() int` — declared or inferred dimensionality (0 until known)
+- Options: `WithAPIKey(key)`, `WithHeader(k, v)`, `WithHTTPClient(c)`, `WithNormalize()`
 
 ## Performance
 
