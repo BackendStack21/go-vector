@@ -19,17 +19,20 @@ go test ./pkg/vector/ -bench=. -benchmem       # all benchmarks
 go test ./pkg/vector/ -run X -bench BenchmarkDot -benchmem  # one bench, no tests
 ```
 
-All code lives in the single package `pkg/vector/` (tests are package `vector`, white-box). `cmd/go-vector/` is a demo binary; `docs/` is the GitHub Pages site (static HTML, not built).
+Core code lives in `pkg/vector/` (tests are package `vector`, white-box); `pkg/onnx/` is the optional local-neural-embeddings package (its model-dependent tests skip unless `make model` has downloaded all-MiniLM-L6-v2 into `pkg/onnx/testdata/`, and need `brew install onnxruntime`). Note: because `make test`/`make ci` cover `pkg/onnx`, repo development requires CGo (a C toolchain); consumers importing only `pkg/vector` still build with `CGO_ENABLED=0`. `cmd/go-vector/` is a demo binary; `docs/` is the GitHub Pages site (static HTML, not built).
 
 ## Architecture
 
-The whole library is one flat package built on one type: `Vector = []float32` (a raw slice alias, no struct wrapper). Everything composes from that. Source files split by concern:
+The core library is one flat package built on one type: `Vector = []float32` (a raw slice alias, no struct wrapper). Everything composes from that. Source files split by concern:
 
 - **`vector.go`** — element-wise ops (`Dot`, `Norm`, `Normalize`, `Add`, `Sub`, `Scale`, `Clone`, `Equal`/`EqualEps`, `Dims`).
 - **`similarity.go`** — the `Metric` enum and distance functions. `Distance(a, b, metric)` dispatches; `Metric.Ascending()` reports whether lower-is-better (true for all distances, false only for `DotProductSimilarity`). The sort direction in `Store.Search` keys off `Ascending()`.
 - **`store.go`** — `Store`, a brute-force in-memory index (parallel `ids []string` / `vectors []Vector` slices) plus gob and JSON persistence.
 - **`embedder.go`** — the `Embedder` interface (`Embed(text) (Vector, error)`, `Dims() int`) — the seam for swapping in external embedding backends.
+- **`http_embedder.go`** — `HTTPEmbedder`, an adapter for OpenAI-compatible embeddings APIs (OpenAI, Ollama, LM Studio, …) built on stdlib `net/http` only. Tests use `httptest` servers — no network.
 - **`random_projections.go`** + **`rp_persistence.go`** — the built-in `RandomProjections` embedder and its gob save/load.
+
+`pkg/onnx/` (separate package, separate deps) runs BERT-family ONNX models in-process: `tokenizer.go` is a pure-Go BERT WordPiece tokenizer, `embedder.go` wraps an ONNX Runtime session (mean pooling over `last_hidden_state`, or a pre-pooled `sentence_embedding` output, then L2 normalization). It satisfies `vector.Embedder`.
 
 ### Invariants that pervade the codebase — preserve these
 
@@ -38,7 +41,7 @@ These rules are why edits don't break callers; every function in the package alr
 - **No panics on bad input.** Mismatched-length vectors, zero vectors, and `k <= 0` return zero / `nil` rather than panicking. New functions must follow suit.
 - **Clone on every output boundary.** `Store.Add` clones on insert; `Get` and `Search` return clones. Internal backing arrays are never handed out — callers can never mutate store state through a returned slice.
 - **Zero-allocation, single-pass distances.** `Dot`, `Cosine`, `Euclidean`, `Manhattan` accumulate in one loop with no allocation (verified by `-benchmem` showing `0 allocs`). Don't introduce intermediate slices in these hot paths.
-- **Zero third-party dependencies, ever.** stdlib only (`math`, `sort`, `encoding/gob`, `encoding/json`, `os`, `strings`, `unicode`, `math/rand`). Never add to `go.mod` — keeping it dependency-free is the library's entire value proposition (no CGo, no BLAS).
+- **`pkg/vector` imports stdlib only** (`math`, `sort`, `encoding/gob`, `encoding/json`, `os`, `strings`, `unicode`, `math/rand`, `net/http`). Third-party/CGo integrations are quarantined in sibling packages — currently `pkg/onnx` (`onnxruntime_go`, `golang.org/x/text`) — so the core stays importable with no CGo and no BLAS. Never add an import to `pkg/vector` beyond stdlib.
 - **Concurrency: read-safe, not write-safe.** `Store` supports concurrent reads but concurrent read/write needs an external `sync.Mutex` — there is no internal locking by design.
 
 ### Persistence detail

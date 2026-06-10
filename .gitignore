@@ -6,6 +6,9 @@ bin/
 *.so
 *.dylib
 
+# Downloaded ONNX model for pkg/onnx tests (make model)
+pkg/onnx/testdata/
+
 # Test coverage
 coverage.out
 *.out
