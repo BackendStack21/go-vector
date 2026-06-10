@@ -78,6 +78,19 @@ func TestTokenizerPartialMatchIsUnk(t *testing.T) {
 	}
 }
 
+func TestTokenizerFormatCharsStripped(t *testing.T) {
+	tok := writeVocab(t, testVocabTokens)
+	// Soft hyphen (U+00AD) and zero-width joiner (U+200D) are Unicode
+	// format (Cf) characters; HF's BERT tokenizer removes them entirely,
+	// joining the surrounding letters.
+	if got := tok.encode("ca­ts", 16); !reflect.DeepEqual(got, []int64{2, 5, 9, 3}) {
+		t.Errorf("soft hyphen: got %v, want cat+##s [2 5 9 3]", got)
+	}
+	if got := tok.encode("cat‍s", 16); !reflect.DeepEqual(got, []int64{2, 5, 9, 3}) {
+		t.Errorf("ZWJ: got %v, want cat+##s [2 5 9 3]", got)
+	}
+}
+
 func TestTokenizerCJKSplit(t *testing.T) {
 	tok := writeVocab(t, append(testVocabTokens, "你", "好"))
 	if got := tok.encode("你好", 16); len(got) != 4 {

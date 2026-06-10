@@ -77,19 +77,27 @@ func WithCasedVocab() Option {
 }
 
 var (
-	initOnce sync.Once
-	initErr  error
+	initMu   sync.Mutex
+	initDone bool
 )
 
-// initRuntime initializes the global ONNX Runtime environment exactly once.
+// initRuntime initializes the global ONNX Runtime environment. The first
+// successful initialization wins; a failed attempt does not poison later
+// ones, so New can be retried with a corrected library path.
 func initRuntime(explicit string) error {
-	initOnce.Do(func() {
-		if path := resolveLibrary(explicit); path != "" {
-			ort.SetSharedLibraryPath(path)
-		}
-		initErr = ort.InitializeEnvironment()
-	})
-	return initErr
+	initMu.Lock()
+	defer initMu.Unlock()
+	if initDone {
+		return nil
+	}
+	if path := resolveLibrary(explicit); path != "" {
+		ort.SetSharedLibraryPath(path)
+	}
+	if err := ort.InitializeEnvironment(); err != nil {
+		return err
+	}
+	initDone = true
+	return nil
 }
 
 // resolveLibrary picks the ONNX Runtime shared library: explicit option,
@@ -161,6 +169,9 @@ func New(modelPath, vocabPath string, opts ...Option) (*Embedder, error) {
 		return nil, fmt.Errorf("onnx: model declares no recognized inputs")
 	}
 
+	if len(outputs) == 0 {
+		return nil, fmt.Errorf("onnx: model declares no outputs")
+	}
 	// Prefer a pooled sentence embedding when exported; otherwise
 	// mean-pool token embeddings ourselves.
 	out := outputs[0]
@@ -275,6 +286,16 @@ func (e *Embedder) EmbedBatch(texts []string) ([]vector.Vector, error) {
 	data := out.GetData()
 	outShape := out.GetShape()
 	hidden := int(outShape[len(outShape)-1])
+	// Validate the full shape before indexing into data — a model whose
+	// output disagrees with (batch, seqLen, hidden) must error, not panic.
+	wantRank := 3
+	if e.pooled {
+		wantRank = 2
+	}
+	if hidden <= 0 || len(outShape) != wantRank || int(outShape[0]) != len(texts) ||
+		(!e.pooled && int(outShape[1]) != seqLen) {
+		return nil, fmt.Errorf("onnx: unexpected output shape %v for batch=%d seq=%d", outShape, len(texts), seqLen)
+	}
 	e.setDims(hidden)
 
 	result := make([]vector.Vector, len(texts))

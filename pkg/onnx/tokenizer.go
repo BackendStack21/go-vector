@@ -24,9 +24,9 @@ type wordPieceTokenizer struct {
 	lower bool
 }
 
-// maxWordPieceChars mirrors BERT's max_input_chars_per_word: longer words
-// map straight to [UNK] instead of being split.
-const maxWordPieceChars = 200
+// maxWordPieceChars mirrors BERT's max_input_chars_per_word (100): longer
+// words map straight to [UNK] instead of being split.
+const maxWordPieceChars = 100
 
 // loadVocab reads a BERT vocab.txt (one token per line, ID = line index).
 func loadVocab(path string, lower bool) (*wordPieceTokenizer, error) {
@@ -115,9 +115,10 @@ func (t *wordPieceTokenizer) basicTokenize(text string) []string {
 	}
 	for _, r := range text {
 		switch {
-		case r == 0 || r == 0xFFFD || unicode.IsControl(r):
-			// drop invalid/control characters (tab/newline count as space
-			// via IsSpace below, checked first)
+		case r == 0 || r == 0xFFFD || unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			// drop invalid, control, and format characters (ZWJ, soft
+			// hyphen, BOM, …) like HF's _clean_text; whitespace-class
+			// controls (tab/newline) still split words
 			if unicode.IsSpace(r) {
 				flush()
 			}

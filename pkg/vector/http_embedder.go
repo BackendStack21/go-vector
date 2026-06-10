@@ -186,14 +186,27 @@ func (e *HTTPEmbedder) EmbedBatchContext(ctx context.Context, texts []string) ([
 		return nil, fmt.Errorf("vector: embeddings API returned %d vectors for %d inputs", len(parsed.Data), len(texts))
 	}
 
-	// The index field, not array position, is authoritative for ordering.
+	// The index field, not array position, is authoritative for ordering —
+	// and must form the exact permutation 0..n-1, or texts and vectors
+	// would be silently mismatched.
 	sort.Slice(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
+	got := len(parsed.Data[0].Embedding)
+	for i, d := range parsed.Data {
+		if d.Index != i {
+			return nil, fmt.Errorf("vector: embeddings API returned indices that are not a permutation of 0..%d", len(texts)-1)
+		}
+		if len(d.Embedding) != got {
+			return nil, fmt.Errorf("vector: embeddings API returned inconsistent dims (%d and %d) in one response", got, len(d.Embedding))
+		}
+	}
+	// Validate (and possibly lock in) dims only after the whole batch is
+	// known-consistent, so a rejected response can never poison inference.
+	if err := e.checkDims(got); err != nil {
+		return nil, err
+	}
 
 	out := make([]Vector, len(texts))
 	for i, d := range parsed.Data {
-		if err := e.checkDims(len(d.Embedding)); err != nil {
-			return nil, err
-		}
 		v := d.Embedding
 		if e.normalize {
 			if n := Norm(v); n > 0 {
@@ -208,8 +221,11 @@ func (e *HTTPEmbedder) EmbedBatchContext(ctx context.Context, texts []string) ([
 }
 
 // checkDims validates a response vector's length against the declared
-// dimensionality, inferring it from the first response when unset.
+// dimensionality, inferring it from the first valid response when unset.
 func (e *HTTPEmbedder) checkDims(got int) error {
+	if got == 0 {
+		return fmt.Errorf("vector: embeddings API returned an empty embedding")
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.dims == 0 {

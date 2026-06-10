@@ -19,7 +19,7 @@ go test ./pkg/vector/ -bench=. -benchmem       # all benchmarks
 go test ./pkg/vector/ -run X -bench BenchmarkDot -benchmem  # one bench, no tests
 ```
 
-Core code lives in `pkg/vector/` (tests are package `vector`, white-box); `pkg/onnx/` is the optional local-neural-embeddings package (its model-dependent tests skip unless `make model` has downloaded all-MiniLM-L6-v2 into `pkg/onnx/testdata/`, and need `brew install onnxruntime`). `cmd/go-vector/` is a demo binary; `docs/` is the GitHub Pages site (static HTML, not built).
+Core code lives in `pkg/vector/` (tests are package `vector`, white-box); `pkg/onnx/` is the optional local-neural-embeddings package (its model-dependent tests skip unless `make model` has downloaded all-MiniLM-L6-v2 into `pkg/onnx/testdata/`, and need `brew install onnxruntime`). Note: because `make test`/`make ci` cover `pkg/onnx`, repo development requires CGo (a C toolchain); consumers importing only `pkg/vector` still build with `CGO_ENABLED=0`. `cmd/go-vector/` is a demo binary; `docs/` is the GitHub Pages site (static HTML, not built).
 
 ## Architecture
 

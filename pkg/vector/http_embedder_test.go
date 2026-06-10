@@ -98,7 +98,10 @@ func TestHTTPEmbedderRequestShape(t *testing.T) {
 
 func TestHTTPEmbedderBatchOrdering(t *testing.T) {
 	// Server returns items in reverse order; the index field must win.
+	// Also asserts the whole batch costs exactly one HTTP request.
+	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
 		fmt.Fprint(w, `{"data":[{"index":1,"embedding":[2,2]},{"index":0,"embedding":[1,1]}]}`)
 	}))
 	defer srv.Close()
@@ -110,6 +113,73 @@ func TestHTTPEmbedderBatchOrdering(t *testing.T) {
 	}
 	if !Equal(vecs[0], Vector{1, 1}) || !Equal(vecs[1], Vector{2, 2}) {
 		t.Errorf("got %v, want [[1 1] [2 2]]", vecs)
+	}
+	if calls != 1 {
+		t.Errorf("EmbedBatch made %d requests, want 1", calls)
+	}
+}
+
+func TestHTTPEmbedderInvalidIndices(t *testing.T) {
+	// Indices that are not the permutation 0..n-1 (duplicates, negatives,
+	// out of range) must error, never silently mis-assign vectors.
+	for _, data := range []string{
+		`{"data":[{"index":7,"embedding":[9,9]},{"index":-3,"embedding":[1,1]}]}`,
+		`{"data":[{"index":0,"embedding":[1,1]},{"index":0,"embedding":[2,2]}]}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, data)
+		}))
+		e := NewHTTPEmbedder(srv.URL, "m", 2)
+		if _, err := e.EmbedBatch([]string{"a", "b"}); err == nil ||
+			!strings.Contains(err.Error(), "permutation") {
+			t.Errorf("response %s: want permutation error, got %v", data, err)
+		}
+		srv.Close()
+	}
+}
+
+func TestHTTPEmbedderEmptyEmbedding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[{"index":0,"embedding":[]}]}`)
+	}))
+	defer srv.Close()
+
+	e := NewHTTPEmbedder(srv.URL, "m", 0)
+	if _, err := e.Embed("x"); err == nil || !strings.Contains(err.Error(), "empty embedding") {
+		t.Errorf("want empty-embedding error, got %v", err)
+	}
+	if e.Dims() != 0 {
+		t.Errorf("empty embedding must not lock dims inference, Dims() = %d", e.Dims())
+	}
+}
+
+func TestHTTPEmbedderFailedBatchDoesNotLockDims(t *testing.T) {
+	// First response is internally inconsistent and rejected; it must not
+	// poison dims inference for the following valid response.
+	bad := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bad {
+			fmt.Fprint(w, `{"data":[{"index":0,"embedding":[1,2,3]},{"index":1,"embedding":[1,2]}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"index":0,"embedding":[1,2,3,4]},{"index":1,"embedding":[5,6,7,8]}]}`)
+	}))
+	defer srv.Close()
+
+	e := NewHTTPEmbedder(srv.URL, "m", 0)
+	if _, err := e.EmbedBatch([]string{"a", "b"}); err == nil ||
+		!strings.Contains(err.Error(), "inconsistent dims") {
+		t.Fatalf("want inconsistent-dims error, got %v", err)
+	}
+	if e.Dims() != 0 {
+		t.Fatalf("rejected batch locked dims to %d", e.Dims())
+	}
+	bad = false
+	if _, err := e.EmbedBatch([]string{"a", "b"}); err != nil {
+		t.Fatalf("valid batch after failure: %v", err)
+	}
+	if e.Dims() != 4 {
+		t.Errorf("Dims() = %d, want 4", e.Dims())
 	}
 }
 
