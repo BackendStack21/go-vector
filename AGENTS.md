@@ -16,6 +16,8 @@ pkg/onnx/                    ← local neural embeddings (depends on onnxruntime
   embedder.go                Embedder: ONNX session, mean pooling, L2 normalization
   tokenizer.go               Pure-Go BERT WordPiece tokenizer (vocab.txt)
   testdata/                  Model files for tests (gitignored; fetch with `make model`)
+pkg/hnsw/                    ← optional pure-Go HNSW approximate index
+pkg/quantize/                ← optional int8 quantization + Int8Store
 cmd/go-vector/               ← minimal CLI demo
 docs/                        ← GitHub Pages landing page
   index.html                 Dark-themed single-page site

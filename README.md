@@ -193,25 +193,34 @@ vector.CosineDistance       // 1 − cos(θ)  → [0, 2],   lower = more similar
 vector.EuclideanDistance    // L2 distance  → [0, ∞),  lower = more similar
 vector.ManhattanDistance    // L1 distance  → [0, ∞),  lower = more similar
 vector.DotProductSimilarity // dot product  → (−∞, ∞), higher = more similar
+vector.ChebyshevDistance    // L∞ / max-norm → [0, ∞), lower = more similar
+vector.HammingDistance      // differing dims → [0, d], lower = more similar
 ```
 
-Direct functions: `Cosine`, `CosineDist`, `Euclidean`, `Manhattan`, `Distance`.
+Direct functions: `Cosine`, `CosineDist`, `Euclidean`, `Manhattan`, `Chebyshev`, `Hamming`, `Distance`, `Hybrid`.
 
 ### Vector Store
 
 ```go
 store := vector.NewStore(vector.CosineDistance)
 
-store.Add(id, v)           // insert (clones input)
+store.Add(id, v)           // insert (clones input; duplicates allowed)
+store.AddUnique(id, v)     // insert only if id is new
+store.Upsert(id, v)        // replace first match, or add
 store.Search(query, k)     // top-k nearest neighbors
-store.Get(id)              // lookup by id (clone)
-store.Remove(id)           // remove by id
+store.SearchIDs(query, k)  // top-k without cloning vectors
+store.SearchOpts(q, k, opts...) // filters, threshold, parallel, skip clones
+store.SearchRadius(q, r)   // all hits within radius
+store.Get(id)              // lookup by id (clone, first match)
+store.Has(id) / IDs() / Dims() / Metric() / Clear()
+store.SetMeta(id, m) / Meta(id)
+store.Remove(id)           // remove first match
 store.Len()                // count
-store.Save(path)           // gob-encode to file
-store.Load(path)           // restore from gob file
-store.SaveJSON(path)       // JSON export
-store.LoadJSON(path)       // JSON import
+store.Save / Load / SaveJSON / LoadJSON / SaveAtomic
+store.WriteTo / ReadFrom   // io.Writer / io.Reader
 ```
+
+`NewLockedStore` is a mutex-wrapped `Store`. Approximate search lives in `pkg/hnsw`; int8 quantization in `pkg/quantize`.
 
 ### Text Embedding
 
@@ -220,6 +229,13 @@ type Embedder interface {
     Embed(text string) (Vector, error)
     Dims() int
 }
+
+type BatchEmbedder interface {
+    Embedder
+    EmbedBatch(texts []string) ([]Vector, error)
+}
+
+// MustEmbed(e, text) panics on error — used by the README one-liner.
 ```
 
 **Built-in: `RandomProjections`**

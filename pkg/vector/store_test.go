@@ -175,6 +175,21 @@ func TestStoreRemove(t *testing.T) {
 	}
 }
 
+func TestStoreSearchTopKEviction(t *testing.T) {
+	// k << n: the two closest vectors are inserted last so a broken
+	// heap (best-at-root) would keep the first k instead of evicting.
+	s := NewStore(EuclideanDistance)
+	s.Add("far1", Vector{10, 0})
+	s.Add("far2", Vector{11, 0})
+	s.Add("far3", Vector{12, 0})
+	s.Add("near", Vector{0.1, 0})
+	s.Add("closest", Vector{0, 0})
+	hits := s.Search(Vector{0, 0}, 2)
+	if len(hits) != 2 || hits[0].ID != "closest" || hits[1].ID != "near" {
+		t.Fatalf("top-k eviction: %+v", hits)
+	}
+}
+
 func TestStoreSearchSingleVector(t *testing.T) {
 	s := NewStore(CosineDistance)
 	s.Add("only", Vector{1, 2, 3})

@@ -142,6 +142,31 @@ func BenchmarkSearchCosine(b *testing.B) {
 	}
 }
 
+func BenchmarkChebyshev(b *testing.B) {
+	a, c := randVector(1536), randVector(1536)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Chebyshev(a, c)
+	}
+}
+
+func BenchmarkHamming(b *testing.B) {
+	a, c := randVector(1536), randVector(1536)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Hamming(a, c)
+	}
+}
+
+func BenchmarkSearchIDs10000(b *testing.B) {
+	s := randStore(10000, 1536)
+	query := randVector(1536)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.SearchIDs(query, 10)
+	}
+}
+
 func BenchmarkSearchEuclidean(b *testing.B) {
 	s := NewStore(EuclideanDistance)
 	for i := 0; i < 1000; i++ {

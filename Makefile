@@ -11,13 +11,13 @@ build:
 	go build ./...
 
 test:
-	go test ./pkg/vector/ ./pkg/onnx/ -count=1
+	go test ./pkg/vector/ ./pkg/onnx/ ./pkg/hnsw/ ./pkg/quantize/ -count=1
 
 test-verbose:
-	go test ./pkg/vector/ ./pkg/onnx/ -v -count=1
+	go test ./pkg/vector/ ./pkg/onnx/ ./pkg/hnsw/ ./pkg/quantize/ -v -count=1
 
 test-cover:
-	go test ./pkg/vector/ ./pkg/onnx/ -coverprofile=coverage.out
+	go test ./pkg/vector/ ./pkg/onnx/ ./pkg/hnsw/ ./pkg/quantize/ -coverprofile=coverage.out
 	go tool cover -func=coverage.out
 
 # Download all-MiniLM-L6-v2 for pkg/onnx tests (skipped when absent)

@@ -30,6 +30,11 @@ type HTTPEmbedder struct {
 	headers   map[string]string
 	client    *http.Client
 	normalize bool
+	retries   int
+	maxBatch  int
+	userAgent string
+	maxResp   int64
+	embedPath string
 
 	mu   sync.Mutex
 	dims int
@@ -66,6 +71,46 @@ func WithNormalize() HTTPEmbedderOption {
 	return func(e *HTTPEmbedder) { e.normalize = true }
 }
 
+// WithRetry retries 429 and 5xx responses up to max times (exponential
+// backoff starting at 50ms). Default 0 — today's no-retry behavior.
+func WithRetry(max int) HTTPEmbedderOption {
+	return func(e *HTTPEmbedder) {
+		if max > 0 {
+			e.retries = max
+		}
+	}
+}
+
+// WithMaxBatch splits EmbedBatch into chunks of at most n texts.
+// n <= 0 means no splitting (one request for the whole batch).
+func WithMaxBatch(n int) HTTPEmbedderOption {
+	return func(e *HTTPEmbedder) {
+		if n > 0 {
+			e.maxBatch = n
+		}
+	}
+}
+
+// WithUserAgent sets the User-Agent header on every request.
+func WithUserAgent(ua string) HTTPEmbedderOption {
+	return func(e *HTTPEmbedder) { e.userAgent = ua }
+}
+
+// WithMaxResponseBytes caps the response body. Default 64 MiB.
+func WithMaxResponseBytes(n int64) HTTPEmbedderOption {
+	return func(e *HTTPEmbedder) {
+		if n > 0 {
+			e.maxResp = n
+		}
+	}
+}
+
+// WithEndpointPath replaces the default "/embeddings" suffix, e.g. Azure
+// "/openai/deployments/<name>/embeddings".
+func WithEndpointPath(path string) HTTPEmbedderOption {
+	return func(e *HTTPEmbedder) { e.embedPath = path }
+}
+
 // NewHTTPEmbedder creates an embedder for an OpenAI-compatible embeddings
 // endpoint. baseURL is the API root, e.g. "https://api.openai.com/v1" or
 // "http://localhost:11434/v1" (Ollama); "/embeddings" is appended. model
@@ -83,6 +128,7 @@ func NewHTTPEmbedder(baseURL, model string, dims int, opts ...HTTPEmbedderOption
 		dims:    dims,
 		headers: make(map[string]string),
 		client:  &http.Client{Timeout: 30 * time.Second},
+		maxResp: 64 << 20,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -135,89 +181,156 @@ type embedResponse struct {
 	} `json:"error"`
 }
 
+func (e *HTTPEmbedder) endpoint() string {
+	path := e.embedPath
+	if path == "" {
+		path = "/embeddings"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return e.baseURL + path
+}
+
+func retryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
+}
+
 // EmbedBatchContext is EmbedBatch with request cancellation/deadline control.
 func (e *HTTPEmbedder) EmbedBatchContext(ctx context.Context, texts []string) ([]Vector, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	chunk := e.maxBatch
+	if chunk <= 0 || chunk >= len(texts) {
+		return e.embedOnce(ctx, texts)
+	}
+	out := make([]Vector, 0, len(texts))
+	for i := 0; i < len(texts); i += chunk {
+		j := i + chunk
+		if j > len(texts) {
+			j = len(texts)
+		}
+		part, err := e.embedOnce(ctx, texts[i:j])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
 
+func (e *HTTPEmbedder) embedOnce(ctx context.Context, texts []string) ([]Vector, error) {
 	body, err := json.Marshal(embedRequest{Model: e.model, Input: texts})
 	if err != nil {
 		return nil, fmt.Errorf("vector: encode embeddings request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("vector: build embeddings request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if e.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+e.apiKey)
-	}
-	for k, v := range e.headers {
-		req.Header.Set(k, v)
+	limit := e.maxResp
+	if limit <= 0 {
+		limit = 64 << 20
 	}
 
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("vector: embeddings request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	attempts := e.retries + 1
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			delay := 50 * time.Millisecond * time.Duration(1<<uint(attempt-1))
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return nil, fmt.Errorf("vector: read embeddings response: %w", err)
-	}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(), bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("vector: build embeddings request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if e.userAgent != "" {
+			req.Header.Set("User-Agent", e.userAgent)
+		}
+		if e.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+e.apiKey)
+		}
+		for k, v := range e.headers {
+			req.Header.Set(k, v)
+		}
 
-	var parsed embedResponse
-	if jsonErr := json.Unmarshal(raw, &parsed); jsonErr != nil {
+		resp, err := e.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("vector: embeddings request failed: %w", err)
+			if attempt+1 < attempts {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, limit))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("vector: read embeddings response: %w", readErr)
+		}
+
+		if retryableStatus(resp.StatusCode) && attempt+1 < attempts {
+			lastErr = fmt.Errorf("vector: embeddings API returned status %d", resp.StatusCode)
+			continue
+		}
+
+		var parsed embedResponse
+		if jsonErr := json.Unmarshal(raw, &parsed); jsonErr != nil {
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("vector: embeddings API returned status %d", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("vector: decode embeddings response: %w", jsonErr)
+		}
+		if parsed.Error != nil && parsed.Error.Message != "" {
+			return nil, fmt.Errorf("vector: embeddings API error (status %d): %s", resp.StatusCode, parsed.Error.Message)
+		}
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("vector: embeddings API returned status %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf("vector: decode embeddings response: %w", jsonErr)
-	}
-	if parsed.Error != nil && parsed.Error.Message != "" {
-		return nil, fmt.Errorf("vector: embeddings API error (status %d): %s", resp.StatusCode, parsed.Error.Message)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vector: embeddings API returned status %d", resp.StatusCode)
-	}
-	if len(parsed.Data) != len(texts) {
-		return nil, fmt.Errorf("vector: embeddings API returned %d vectors for %d inputs", len(parsed.Data), len(texts))
-	}
-
-	// The index field, not array position, is authoritative for ordering —
-	// and must form the exact permutation 0..n-1, or texts and vectors
-	// would be silently mismatched.
-	sort.Slice(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
-	got := len(parsed.Data[0].Embedding)
-	for i, d := range parsed.Data {
-		if d.Index != i {
-			return nil, fmt.Errorf("vector: embeddings API returned indices that are not a permutation of 0..%d", len(texts)-1)
+		if len(parsed.Data) != len(texts) {
+			return nil, fmt.Errorf("vector: embeddings API returned %d vectors for %d inputs", len(parsed.Data), len(texts))
 		}
-		if len(d.Embedding) != got {
-			return nil, fmt.Errorf("vector: embeddings API returned inconsistent dims (%d and %d) in one response", got, len(d.Embedding))
-		}
-	}
-	// Validate (and possibly lock in) dims only after the whole batch is
-	// known-consistent, so a rejected response can never poison inference.
-	if err := e.checkDims(got); err != nil {
-		return nil, err
-	}
 
-	out := make([]Vector, len(texts))
-	for i, d := range parsed.Data {
-		v := d.Embedding
-		if e.normalize {
-			if n := Norm(v); n > 0 {
-				for j := range v {
-					v[j] /= n
-				}
+		// The index field, not array position, is authoritative for ordering —
+		// and must form the exact permutation 0..n-1, or texts and vectors
+		// would be silently mismatched.
+		sort.Slice(parsed.Data, func(i, j int) bool { return parsed.Data[i].Index < parsed.Data[j].Index })
+		got := len(parsed.Data[0].Embedding)
+		for i, d := range parsed.Data {
+			if d.Index != i {
+				return nil, fmt.Errorf("vector: embeddings API returned indices that are not a permutation of 0..%d", len(texts)-1)
+			}
+			if len(d.Embedding) != got {
+				return nil, fmt.Errorf("vector: embeddings API returned inconsistent dims (%d and %d) in one response", got, len(d.Embedding))
 			}
 		}
-		out[i] = v
+		// Validate (and possibly lock in) dims only after the whole batch is
+		// known-consistent, so a rejected response can never poison inference.
+		if err := e.checkDims(got); err != nil {
+			return nil, err
+		}
+
+		out := make([]Vector, len(texts))
+		for i, d := range parsed.Data {
+			v := d.Embedding
+			if e.normalize {
+				if n := Norm(v); n > 0 {
+					for j := range v {
+						v[j] /= n
+					}
+				}
+			}
+			out[i] = v
+		}
+		return out, nil
 	}
-	return out, nil
+	return nil, lastErr
 }
 
 // checkDims validates a response vector's length against the declared

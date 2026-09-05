@@ -121,6 +121,8 @@ func TestMetricAscending(t *testing.T) {
 		{EuclideanDistance, true},
 		{ManhattanDistance, true},
 		{DotProductSimilarity, false},
+		{ChebyshevDistance, true},
+		{HammingDistance, true},
 	}
 
 	for _, tt := range tests {

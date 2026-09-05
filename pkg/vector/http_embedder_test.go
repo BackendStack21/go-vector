@@ -349,6 +349,81 @@ func TestHTTPEmbedderContextCancel(t *testing.T) {
 	}
 }
 
+func TestHTTPEmbedderRetry(t *testing.T) {
+	fails := 2
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if fails > 0 {
+			fails--
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		fmt.Fprint(w, `{"data":[{"index":0,"embedding":[1,2]}]}`)
+	}))
+	defer srv.Close()
+
+	e := NewHTTPEmbedder(srv.URL, "m", 2, WithRetry(3), WithUserAgent("go-vector-test"))
+	v, err := e.Embed("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Equal(v, Vector{1, 2}) || calls != 3 {
+		t.Fatalf("v=%v calls=%d", v, calls)
+	}
+}
+
+func TestHTTPEmbedderNoRetryOn401(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"no"}}`)
+	}))
+	defer srv.Close()
+	e := NewHTTPEmbedder(srv.URL, "m", 2, WithRetry(5))
+	if _, err := e.Embed("x"); err == nil {
+		t.Fatal("want error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, 401 must not retry", calls)
+	}
+}
+
+func TestHTTPEmbedderMaxBatchAndPath(t *testing.T) {
+	var sizes []int
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		sizes = append(sizes, len(req.Input))
+		fmt.Fprintf(w, `{"data":[`)
+		for i := range req.Input {
+			if i > 0 {
+				fmt.Fprint(w, ",")
+			}
+			fmt.Fprintf(w, `{"index":%d,"embedding":[1]}`, i)
+		}
+		fmt.Fprint(w, `]}`)
+	}))
+	defer srv.Close()
+
+	e := NewHTTPEmbedder(srv.URL, "m", 1, WithMaxBatch(2), WithEndpointPath("/custom/embeddings"))
+	vecs, err := e.EmbedBatch([]string{"a", "b", "c"})
+	if err != nil || len(vecs) != 3 {
+		t.Fatalf("%v %d", err, len(vecs))
+	}
+	if len(sizes) != 2 || sizes[0] != 2 || sizes[1] != 1 {
+		t.Fatalf("chunks %v", sizes)
+	}
+	if path != "/custom/embeddings" {
+		t.Fatalf("path %s", path)
+	}
+}
+
 func TestHTTPEmbedderStoreIntegration(t *testing.T) {
 	srv := newEmbedServer(t, map[string]Vector{
 		"cats are great":  {1, 0.1, 0},

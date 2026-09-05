@@ -4,6 +4,8 @@ A backward-compatible roadmap for performance and feature work. This document is
 
 Current baseline: **v1.3.x** (`pkg/vector` stdlib-only, optional `pkg/onnx`).
 
+**Status:** Phases 0–3 are implemented on this branch. Existing exported signatures and v1.3 gob/JSON fixtures remain the compatibility suite. `Store.Search` now uses a correct worst-at-root top-k heap (the v1.3 heap only looked right when `k >= n`).
+
 ---
 
 ## 1. Compatibility contract

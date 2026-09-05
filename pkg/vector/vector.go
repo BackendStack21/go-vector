@@ -17,7 +17,8 @@
 // Distance computation is O(d) per vector pair where d = dimensionality.
 // Store.Search is brute-force O(n·d) for n vectors. Suitable for up to ~100K
 // vectors at typical embedding dimensions (384–1536). For larger datasets,
-// pair with an approximate index (FAISS, Annoy) and use this for exact re-ranking.
+// pair with an approximate index (pkg/hnsw, or FAISS/Annoy) and use this
+// for exact re-ranking.
 package vector
 
 import "math"
@@ -30,6 +31,11 @@ type Vector []float32
 // For unnormalized vectors with large magnitudes, reduce proportionally.
 const MaxSafeDims = 1_000_000
 
+// unrollMin is the length at which kernels switch to 4-way accumulation.
+// Shorter vectors keep the original sequential loop so existing unit-test
+// inputs stay bit-identical.
+const unrollMin = 16
+
 // Dims returns the dimensionality of v.
 func Dims(v Vector) int { return len(v) }
 
@@ -38,8 +44,24 @@ func Dot(a, b Vector) float32 {
 	if len(a) != len(b) {
 		return 0
 	}
-	var sum float32
-	for i := range a {
+	n := len(a)
+	if n < unrollMin {
+		var sum float32
+		for i := range a {
+			sum += a[i] * b[i]
+		}
+		return sum
+	}
+	var s0, s1, s2, s3 float32
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		s0 += a[i] * b[i]
+		s1 += a[i+1] * b[i+1]
+		s2 += a[i+2] * b[i+2]
+		s3 += a[i+3] * b[i+3]
+	}
+	sum := s0 + s1 + s2 + s3
+	for ; i < n; i++ {
 		sum += a[i] * b[i]
 	}
 	return sum
@@ -47,50 +69,103 @@ func Dot(a, b Vector) float32 {
 
 // Norm returns the L2 (Euclidean) norm of v.
 func Norm(v Vector) float32 {
-	return float32(math.Sqrt(float64(Dot(v, v))))
+	return float32(math.Sqrt(float64(dotSelf(v))))
+}
+
+// dotSelf is Σvᵢ² without a second slice.
+func dotSelf(v Vector) float32 {
+	n := len(v)
+	if n < unrollMin {
+		var sum float32
+		for _, x := range v {
+			sum += x * x
+		}
+		return sum
+	}
+	var s0, s1, s2, s3 float32
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		s0 += v[i] * v[i]
+		s1 += v[i+1] * v[i+1]
+		s2 += v[i+2] * v[i+2]
+		s3 += v[i+3] * v[i+3]
+	}
+	sum := s0 + s1 + s2 + s3
+	for ; i < n; i++ {
+		sum += v[i] * v[i]
+	}
+	return sum
 }
 
 // Normalize returns a unit vector in the direction of v.
 // Returns nil for the zero vector.
 func Normalize(v Vector) Vector {
+	return NormalizeIn(nil, v)
+}
+
+// NormalizeIn is Normalize writing into dst. dst may be nil or too short, in
+// which case a new slice is allocated. dst may alias v.
+func NormalizeIn(dst, v Vector) Vector {
 	n := Norm(v)
 	if n == 0 {
 		return nil
 	}
-	return Scale(v, 1/n)
+	return ScaleIn(dst, v, 1/n)
 }
 
 // Add returns element-wise sum a + b. Returns nil if lengths differ.
 func Add(a, b Vector) Vector {
+	return AddIn(nil, a, b)
+}
+
+// AddIn is Add writing into dst. Returns nil if lengths differ.
+func AddIn(dst, a, b Vector) Vector {
 	if len(a) != len(b) {
 		return nil
 	}
-	out := make(Vector, len(a))
+	dst = resize(dst, len(a))
 	for i := range a {
-		out[i] = a[i] + b[i]
+		dst[i] = a[i] + b[i]
 	}
-	return out
+	return dst
 }
 
 // Sub returns element-wise difference a - b. Returns nil if lengths differ.
 func Sub(a, b Vector) Vector {
+	return SubIn(nil, a, b)
+}
+
+// SubIn is Sub writing into dst. Returns nil if lengths differ.
+func SubIn(dst, a, b Vector) Vector {
 	if len(a) != len(b) {
 		return nil
 	}
-	out := make(Vector, len(a))
+	dst = resize(dst, len(a))
 	for i := range a {
-		out[i] = a[i] - b[i]
+		dst[i] = a[i] - b[i]
 	}
-	return out
+	return dst
 }
 
 // Scale returns v multiplied by scalar s.
 func Scale(v Vector, s float32) Vector {
-	out := make(Vector, len(v))
+	return ScaleIn(nil, v, s)
+}
+
+// ScaleIn is Scale writing into dst. dst may alias v.
+func ScaleIn(dst, v Vector, s float32) Vector {
+	dst = resize(dst, len(v))
 	for i := range v {
-		out[i] = v[i] * s
+		dst[i] = v[i] * s
 	}
-	return out
+	return dst
+}
+
+func resize(dst Vector, n int) Vector {
+	if cap(dst) < n {
+		return make(Vector, n)
+	}
+	return dst[:n]
 }
 
 // Equal reports whether a and b are approximately equal within epsilon
