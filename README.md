@@ -1,6 +1,6 @@
 # go-vector
 
-Vector similarity library for Go. Pure Go `[]float32` vectors, four distance metrics, text embedding (random projections, OpenAI-compatible APIs, or local ONNX models), and disk-backed persistence. The core `pkg/vector` package is zero-dependency — no CGo, no BLAS, no third-party imports; the optional `pkg/onnx` package adds local neural embeddings via ONNX Runtime.
+Vector similarity library for Go. Pure Go `[]float32` vectors, six distance metrics, text embedding (random projections, OpenAI-compatible APIs, or local ONNX models), disk-backed persistence, and optional HNSW / int8 packages. The core `pkg/vector` package is zero-dependency — no CGo, no BLAS, no third-party imports. Sibling packages add local neural embeddings (`pkg/onnx`), approximate search (`pkg/hnsw`), and quantization (`pkg/quantize`).
 
 ## Install
 
@@ -85,7 +85,7 @@ q, _ := e.Embed("animals that live with people")
 results := store.Search(q, 2) // → the cat and dog docs
 ```
 
-Options: `WithAPIKey` (Bearer auth), `WithHeader` (e.g. Azure's `api-key`), `WithHTTPClient` (custom timeout/proxy; default 30s), `WithNormalize` (L2-normalize responses — useful with `DotProductSimilarity` on backends that don't normalize, such as Ollama). Context-aware variants `EmbedContext` / `EmbedBatchContext` support cancellation and deadlines.
+Options: `WithAPIKey` (Bearer auth), `WithHeader` (e.g. Azure's `api-key`), `WithHTTPClient` (custom timeout/proxy; default 30s), `WithNormalize` (L2-normalize responses — useful with `DotProductSimilarity` on backends that don't normalize, such as Ollama), `WithRetry` (429/5xx only; default 0), `WithMaxBatch`, `WithUserAgent`, `WithMaxResponseBytes` (default 64 MiB), `WithEndpointPath` (Azure-style paths). Context-aware variants `EmbedContext` / `EmbedBatchContext` support cancellation and deadlines.
 
 ### Local Neural Embeddings (ONNX)
 
@@ -113,7 +113,7 @@ q, _ := e.Embed("animals that people keep at home")
 store.Search(q, 1) // → doc0
 ```
 
-Any BERT-style export works (inputs `input_ids`/`attention_mask`/`token_type_ids`; output `last_hidden_state` mean-pooled automatically, or a pre-pooled `sentence_embedding`). Tokenization is a pure-Go BERT WordPiece implementation — no Python, no Rust tokenizer. Options: `WithLibraryPath` (ONNX Runtime location; also honors `ONNXRUNTIME_SHARED_LIBRARY_PATH`), `WithMaxLength` (default 256), `WithCasedVocab`.
+Any BERT-style export works (inputs `input_ids`/`attention_mask`/`token_type_ids`; output `last_hidden_state` mean-pooled automatically, or a pre-pooled `sentence_embedding`). Tokenization is a pure-Go BERT WordPiece implementation — no Python, no Rust tokenizer. Options: `WithLibraryPath` (ONNX Runtime location; also honors `ONNXRUNTIME_SHARED_LIBRARY_PATH`), `WithMaxLength` (default 256), `WithCasedVocab`, `WithIntraOpThreads` / `WithInterOpThreads`, `WithOutputName`, `WithMeanPoolExcludeSpecials` (opt-in), `WithCUDA` / `WithCoreML` (need the matching ONNX Runtime). `EmbedContext` / `EmbedBatchContext` take a deadline.
 
 Try it end to end — downloads the model, embeds a corpus, and answers semantic queries (see `cmd/onnx-demo/`):
 
@@ -128,16 +128,23 @@ make model && make demo-onnx
 ```go
 // Save to disk (gob — compact binary)
 store.Save("/data/vectors.db")
+store.SaveAtomic("/data/vectors.db") // temp + fsync + rename
 store.SaveJSON("/data/vectors.json") // human-readable alternative
+
+// Streaming (io.Writer / io.Reader)
+store.WriteTo(w)
+store.ReadFrom(r)
+store.WriteJSONTo(w)
+store.ReadJSONFrom(r)
 
 // Restore later
 restored := vector.NewStore(vector.CosineDistance)
 restored.Load("/data/vectors.db")
 
-// Full roundtrip — metric and all data preserved
+// Full roundtrip — metric, vectors, IDs, and optional metadata preserved
 ```
 
-Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times.
+Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times. `Load` / `ReadFrom` / `ReadJSONFrom` reject structurally invalid files (mismatched ID/vector/metadata lengths) and leave the store unchanged. v1.3 gob/JSON files still load; new metadata and RP option fields are additive with zero-value defaults.
 
 ### Embedder Persistence
 
@@ -182,6 +189,7 @@ v, _ := restored.Embed("machine learning")
 - `Add(a, b Vector) Vector` — element-wise sum (nil if lengths differ)
 - `Sub(a, b Vector) Vector` — element-wise difference (nil if lengths differ)
 - `Scale(v Vector, s float32) Vector` — scalar multiplication
+- `AddIn` / `SubIn` / `ScaleIn` / `NormalizeIn` — in-place variants that reuse `dst`
 - `Equal(a, b Vector) bool` — approximate equality (ε = 1e-6)
 - `EqualEps(a, b Vector, eps float32) bool` — custom epsilon
 - `Clone(v Vector) Vector` — deep copy
@@ -193,25 +201,37 @@ vector.CosineDistance       // 1 − cos(θ)  → [0, 2],   lower = more similar
 vector.EuclideanDistance    // L2 distance  → [0, ∞),  lower = more similar
 vector.ManhattanDistance    // L1 distance  → [0, ∞),  lower = more similar
 vector.DotProductSimilarity // dot product  → (−∞, ∞), higher = more similar
+vector.ChebyshevDistance    // L∞ / max-norm → [0, ∞), lower = more similar
+vector.HammingDistance      // differing dims → [0, d], lower = more similar
 ```
 
-Direct functions: `Cosine`, `CosineDist`, `Euclidean`, `Manhattan`, `Distance`.
+Direct functions: `Cosine`, `CosineDist`, `Euclidean`, `Manhattan`, `Chebyshev`, `Hamming`, `Distance`, `Hybrid`.
 
 ### Vector Store
 
 ```go
 store := vector.NewStore(vector.CosineDistance)
 
-store.Add(id, v)           // insert (clones input)
-store.Search(query, k)     // top-k nearest neighbors
-store.Get(id)              // lookup by id (clone)
-store.Remove(id)           // remove by id
+store.Add(id, v)           // insert (clones input; duplicates allowed)
+store.AddUnique(id, v)     // insert only if id is new
+store.Upsert(id, v)        // replace first match, or add
+store.Search(query, k)     // top-k nearest neighbors (clones vectors)
+store.SearchIDs(query, k)  // top-k without cloning vectors
+store.SearchOpts(q, k, opts...) // filters, threshold, parallel, skip clones
+store.SearchBatch(qs, k)   // many queries
+store.SearchRadius(q, r)   // all hits within radius
+store.Get(id)              // lookup by id (clone, first match)
+store.Has(id) / IDs() / Dims() / Metric() / Clear()
+store.SetMeta(id, m) / Meta(id)
+store.Remove(id)           // remove first match
 store.Len()                // count
-store.Save(path)           // gob-encode to file
-store.Load(path)           // restore from gob file
-store.SaveJSON(path)       // JSON export
-store.LoadJSON(path)       // JSON import
+store.Save / Load / SaveJSON / LoadJSON / SaveAtomic
+store.WriteTo / ReadFrom / WriteJSONTo / ReadJSONFrom
 ```
+
+Search options: `WithoutVectors()`, `WithPredicate(fn)`, `WithMetaEqual(key, value)`, `WithMaxDistance(d)`, `WithParallel(minN)`. `Rerank(query, hits, metric, k)` exact-rescores a candidate list. `Hybrid(vectorScore, lexicalScore, alpha)` blends two scores.
+
+`NewLockedStore` is a mutex-wrapped `Store` (the core `Store` stays unlocked). Approximate search lives in `pkg/hnsw`; int8 quantization in `pkg/quantize`.
 
 ### Text Embedding
 
@@ -220,19 +240,28 @@ type Embedder interface {
     Embed(text string) (Vector, error)
     Dims() int
 }
+
+type BatchEmbedder interface {
+    Embedder
+    EmbedBatch(texts []string) ([]Vector, error)
+}
+
+// MustEmbed(e, text) panics on error — used by the README one-liner.
 ```
 
 **Built-in: `RandomProjections`**
 
 Johnson-Lindenstrauss sparse random projection (Achlioptas 2003). Projects tokenized text into a fixed-size normalized vector. Deterministic (fixed seed), zero dependencies, ~10µs per embed.
 
-- `NewRandomProjections(outputDim int)` — create embedder
+- `NewRandomProjections(outputDim int)` — create embedder (seed 42, unigrams, min token length 2)
+- `NewRandomProjectionsOpts(dim, opts...)` — same defaults plus `WithSeed`, `WithNGrams`, `WithHashingTrick`, `WithTFIDF`, `WithMinTokenLen`
 - `Fit(corpus []string)` — build vocabulary and projection matrix
+- `FitMore(corpus []string)` — add tokens without rewriting existing projection rows
 - `Embed(text string) (Vector, error)` — embed text (L2-normalized output)
+- `MustEmbed` / `EmbedBatch` — panic-on-error helper and batch loop
 - `VocabSize() int` — number of unique tokens in vocabulary
 - `Dims() int` — output dimensionality
-- `SaveEmbedder(path string) error` — persist embedder state to gob file
-- `LoadEmbedder(path string) (*RandomProjections, error)` — restore embedder from gob file
+- `SaveEmbedder` / `LoadEmbedder` / `WriteTo` / `ReadEmbedder` — persist embedder state
 
 **Built-in: `HTTPEmbedder`**
 
@@ -242,7 +271,7 @@ Adapter for any OpenAI-compatible embeddings API (OpenAI, Ollama, LM Studio, Voy
 - `Embed(text string) (Vector, error)` / `EmbedContext(ctx, text)` — embed one text
 - `EmbedBatch(texts []string) ([]Vector, error)` / `EmbedBatchContext(ctx, texts)` — embed many texts in one API call
 - `Dims() int` — declared or inferred dimensionality (0 until known)
-- Options: `WithAPIKey(key)`, `WithHeader(k, v)`, `WithHTTPClient(c)`, `WithNormalize()`
+- Options: `WithAPIKey`, `WithHeader`, `WithHTTPClient`, `WithNormalize`, `WithRetry`, `WithMaxBatch`, `WithUserAgent`, `WithMaxResponseBytes`, `WithEndpointPath`
 
 ## Performance
 
@@ -267,15 +296,72 @@ Distance functions are **zero-allocation**. Cosine and Euclidean compute in a si
 | Attack surface | 🟢 Minimal — pure float32 math, no CGo, no syscalls, no I/O |
 | Panics | 🟢 None — all edge cases return zero/nil |
 | Memory safety | 🟢 All outputs cloned, no shared backing arrays |
-| Persistence safety | 🟡 `Load` replaces all data; atomicity is caller's responsibility |
+| Persistence safety | 🟡 `Load` replaces all data; use `SaveAtomic` for temp+rename. Corrupt files are rejected |
 | Float overflow | 🟡 Documented — `MaxSafeDims = 1M`; normalize large-magnitude vectors |
-| Thread safety | 🟡 Store is read-safe but not write-safe — guard with `sync.Mutex` |
+| Thread safety | 🟡 `Store` is read-safe but not write-safe — use `LockedStore` or an external mutex |
+
+## Approximate search (`pkg/hnsw`)
+
+`Store` stays exact brute-force. For larger collections, `pkg/hnsw` is a pure-Go HNSW graph over the same `vector.Vector` values (stdlib + `pkg/vector` only).
+
+```go
+import "github.com/BackendStack21/go-vector/pkg/hnsw"
+
+idx := hnsw.New(384, vector.CosineDistance, hnsw.WithM(16), hnsw.WithEfSearch(64))
+idx.Add("doc", vec)
+hits := idx.Search(query, 10)
+recall := idx.RecallAgainst(exactStore, queries, 10)
+idx.Save("/data/graph.gob")
+```
+
+Use `Store` up to ~100K vectors; switch to `hnsw.Index` beyond that and optionally `vector.Rerank` the candidates with exact scores. Graph files are a separate gob format — they are not mixed into `storeData`. Malformed graphs are rejected on `Load`.
+
+## Quantization (`pkg/quantize`)
+
+Int8 scaling is a sibling type so float32 `Store` search never quietly loses precision.
+
+```go
+import "github.com/BackendStack21/go-vector/pkg/quantize"
+
+q, scale := quantize.ToInt8(vec)
+vecApprox := quantize.FromInt8(q, scale)
+
+qs := quantize.NewInt8Store(vector.CosineDistance)
+qs.Add("doc", vec)
+qs.Search(query, 10)
+```
+
+## CLI
+
+`cmd/go-vector` keeps `demo`, `embed`, and `persist`, and adds:
+
+```bash
+go-vector index -in docs.jsonl -out store.gob -dim 64
+go-vector query -store store.gob -vector 1.0,0.8,0.1 -k 10
+go-vector bench -n 10000 -d 1536 -k 10
+```
+
+JSONL rows are `{id,text}` (embedded with Random Projections) or `{id,vector}`. Scanner errors are reported; lines may be up to 16 MiB.
+
+## Compatibility
+
+Existing v1.3 callers keep compiling. The contract:
+
+- Do not change the signature or documented semantics of existing exported APIs
+- `Vector` stays `[]float32`; `pkg/vector` imports stdlib only
+- `Add` still allows duplicate IDs; `Get` / `Remove` / `Has` act on the first match
+- `Search` still clones vectors; `SearchIDs` / `WithoutVectors()` skip the copy
+- RandomProjections default seed stays **42**; tokenizer defaults stay unigrams, min length 2
+- `Embedder` does not gain methods — batching is `BatchEmbedder`
+- New metrics are appended after `DotProductSimilarity`
+- v1.3 gob/JSON fixtures in `pkg/vector/testdata/compat/` still load
 
 ## Design
 
-- **Zero dependencies** — `go.mod` has no `require` block
+- **Zero dependencies** — `pkg/vector` imports stdlib only; CGo and ANN live in siblings
 - **Type alias** — `Vector` is `[]float32`, interoperable with any `[]float32` data
-- **Brute-force search** — O(n·d) per query; pair with an approximate index for n > 100K
+- **Packed exact search** — uniform-length stores use a row-major backing array and cached norms
+- **Brute-force by default** — O(n·d) per query; `pkg/hnsw` when n outgrows exact scan
 - **Clone safety** — `Get()`, `Search()`, and `Add()` all clone
 - **Graceful degradation** — mismatched lengths return zero/nil, never panic
 - **Deterministic embeddings** — fixed seed (42) for reproducible results

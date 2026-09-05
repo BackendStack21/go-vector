@@ -3,6 +3,7 @@ package vector
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -181,5 +182,30 @@ func TestStoreSaveJSONRoundtrip(t *testing.T) {
 	}
 	if results[1].ID != "b" {
 		t.Errorf("DotProduct: second should be 'b', got %s", results[1].ID)
+	}
+}
+
+func TestStoreRejectsMismatchedPersist(t *testing.T) {
+	s := NewStore(CosineDistance)
+	s.Add("keep", Vector{1})
+	err := s.ReadJSONFrom(strings.NewReader(`{"IDs":["a"],"Vectors":[[1,2],[3,4]],"Metric":0}`))
+	if err == nil {
+		t.Fatal("expected corrupt-store error")
+	}
+	if s.Len() != 1 || s.Get("keep") == nil {
+		t.Fatal("failed restore must not replace existing data")
+	}
+	err = s.ReadJSONFrom(strings.NewReader(`{"IDs":["a","b"],"Vectors":[[1],[2]],"Metadata":[{"k":"v"}],"Metric":0}`))
+	if err == nil {
+		t.Fatal("expected metadata-length error")
+	}
+	if s.Len() != 1 {
+		t.Fatal("store mutated after metadata mismatch")
+	}
+	if err := s.ReadJSONFrom(strings.NewReader(`{"IDs":[],"Vectors":[],"Metric":0}`)); err != nil {
+		t.Fatalf("empty store should load: %v", err)
+	}
+	if s.Len() != 0 {
+		t.Fatal("empty restore")
 	}
 }

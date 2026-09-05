@@ -9,6 +9,7 @@
 package onnx
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -30,11 +31,12 @@ import (
 // Concurrency: safe for concurrent Embed/EmbedBatch calls (ONNX Runtime
 // sessions are thread-safe).
 type Embedder struct {
-	session    *ort.DynamicAdvancedSession
-	tok        *wordPieceTokenizer
-	inputNames []string // model-declared order, subset of the BERT trio
-	pooled     bool     // true when the model outputs rank-2 sentence embeddings
-	maxLen     int
+	session         *ort.DynamicAdvancedSession
+	tok             *wordPieceTokenizer
+	inputNames      []string // model-declared order, subset of the BERT trio
+	pooled          bool     // true when the model outputs rank-2 sentence embeddings
+	maxLen          int
+	excludeSpecials bool
 
 	mu   sync.Mutex
 	dims int
@@ -44,9 +46,15 @@ type Embedder struct {
 type Option func(*config)
 
 type config struct {
-	libraryPath string
-	maxLen      int
-	cased       bool
+	libraryPath     string
+	maxLen          int
+	cased           bool
+	intraOp         int
+	interOp         int
+	outputName      string
+	excludeSpecials bool
+	cuda            bool
+	coreml          bool
 }
 
 // WithLibraryPath sets the path to the ONNX Runtime shared library
@@ -74,6 +82,45 @@ func WithMaxLength(n int) Option {
 // most sentence-transformers models).
 func WithCasedVocab() Option {
 	return func(c *config) { c.cased = true }
+}
+
+// WithIntraOpThreads sets ONNX Runtime intra-op threads. 0 leaves the default.
+func WithIntraOpThreads(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.intraOp = n
+		}
+	}
+}
+
+// WithInterOpThreads sets ONNX Runtime inter-op threads. 0 leaves the default.
+func WithInterOpThreads(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.interOp = n
+		}
+	}
+}
+
+// WithOutputName forces a specific model output name instead of auto-detect.
+func WithOutputName(name string) Option {
+	return func(c *config) { c.outputName = name }
+}
+
+// WithMeanPoolExcludeSpecials skips [CLS] and [SEP] when mean-pooling
+// last_hidden_state. Default includes every unmasked token (today's behavior).
+func WithMeanPoolExcludeSpecials() Option {
+	return func(c *config) { c.excludeSpecials = true }
+}
+
+// WithCUDA appends the CUDA execution provider. New fails if CUDA is unavailable.
+func WithCUDA() Option {
+	return func(c *config) { c.cuda = true }
+}
+
+// WithCoreML appends the CoreML execution provider. New fails if unavailable.
+func WithCoreML() Option {
+	return func(c *config) { c.coreml = true }
 }
 
 var (
@@ -156,7 +203,7 @@ func New(modelPath, vocabPath string, opts ...Option) (*Embedder, error) {
 		return nil, fmt.Errorf("onnx: inspect model: %w", err)
 	}
 
-	e := &Embedder{tok: tok, maxLen: cfg.maxLen}
+	e := &Embedder{tok: tok, maxLen: cfg.maxLen, excludeSpecials: cfg.excludeSpecials}
 	for _, in := range inputs {
 		switch in.Name {
 		case "input_ids", "attention_mask", "token_type_ids":
@@ -175,13 +222,27 @@ func New(modelPath, vocabPath string, opts ...Option) (*Embedder, error) {
 	// Prefer a pooled sentence embedding when exported; otherwise
 	// mean-pool token embeddings ourselves.
 	out := outputs[0]
-	for _, o := range outputs {
-		if o.Name == "sentence_embedding" {
-			out = o
-			break
+	if cfg.outputName != "" {
+		found := false
+		for _, o := range outputs {
+			if o.Name == cfg.outputName {
+				out = o
+				found = true
+				break
+			}
 		}
-		if o.Name == "last_hidden_state" {
-			out = o
+		if !found {
+			return nil, fmt.Errorf("onnx: model has no output named %q", cfg.outputName)
+		}
+	} else {
+		for _, o := range outputs {
+			if o.Name == "sentence_embedding" {
+				out = o
+				break
+			}
+			if o.Name == "last_hidden_state" {
+				out = o
+			}
 		}
 	}
 	switch len(out.Dimensions) {
@@ -196,7 +257,42 @@ func New(modelPath, vocabPath string, opts ...Option) (*Embedder, error) {
 		e.dims = int(d)
 	}
 
-	session, err := ort.NewDynamicAdvancedSession(modelPath, e.inputNames, []string{out.Name}, nil)
+	var sessionOpts *ort.SessionOptions
+	if cfg.intraOp > 0 || cfg.interOp > 0 || cfg.cuda || cfg.coreml {
+		sessionOpts, err = ort.NewSessionOptions()
+		if err != nil {
+			return nil, fmt.Errorf("onnx: session options: %w", err)
+		}
+		defer sessionOpts.Destroy()
+		if cfg.intraOp > 0 {
+			if err := sessionOpts.SetIntraOpNumThreads(cfg.intraOp); err != nil {
+				return nil, fmt.Errorf("onnx: intra-op threads: %w", err)
+			}
+		}
+		if cfg.interOp > 0 {
+			if err := sessionOpts.SetInterOpNumThreads(cfg.interOp); err != nil {
+				return nil, fmt.Errorf("onnx: inter-op threads: %w", err)
+			}
+		}
+		if cfg.cuda {
+			cudaOpts, err := ort.NewCUDAProviderOptions()
+			if err != nil {
+				return nil, fmt.Errorf("onnx: CUDA provider: %w", err)
+			}
+			if err := sessionOpts.AppendExecutionProviderCUDA(cudaOpts); err != nil {
+				cudaOpts.Destroy()
+				return nil, fmt.Errorf("onnx: CUDA execution provider: %w", err)
+			}
+			cudaOpts.Destroy()
+		}
+		if cfg.coreml {
+			if err := sessionOpts.AppendExecutionProviderCoreML(0); err != nil {
+				return nil, fmt.Errorf("onnx: CoreML execution provider: %w", err)
+			}
+		}
+	}
+
+	session, err := ort.NewDynamicAdvancedSession(modelPath, e.inputNames, []string{out.Name}, sessionOpts)
 	if err != nil {
 		return nil, fmt.Errorf("onnx: create session: %w", err)
 	}
@@ -221,7 +317,13 @@ func (e *Embedder) Dims() int {
 
 // Embed returns the L2-normalized embedding for text.
 func (e *Embedder) Embed(text string) (vector.Vector, error) {
-	vecs, err := e.EmbedBatch([]string{text})
+	return e.EmbedContext(context.Background(), text)
+}
+
+// EmbedContext is Embed with cancellation. The ONNX run itself is
+// blocking; ctx is checked before invocation.
+func (e *Embedder) EmbedContext(ctx context.Context, text string) (vector.Vector, error) {
+	vecs, err := e.EmbedBatchContext(ctx, []string{text})
 	if err != nil {
 		return nil, err
 	}
@@ -232,6 +334,14 @@ func (e *Embedder) Embed(text string) (vector.Vector, error) {
 // vectors in input order. Shorter texts are padded and masked, so results
 // match per-text Embed calls. Returns nil for an empty input.
 func (e *Embedder) EmbedBatch(texts []string) ([]vector.Vector, error) {
+	return e.EmbedBatchContext(context.Background(), texts)
+}
+
+// EmbedBatchContext is EmbedBatch with cancellation checked before the run.
+func (e *Embedder) EmbedBatchContext(ctx context.Context, texts []string) ([]vector.Vector, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -306,15 +416,20 @@ func (e *Embedder) EmbedBatch(texts []string) ([]vector.Vector, error) {
 		} else {
 			// Mean over real (unmasked) token positions.
 			n := len(encoded[i])
+			start, end := 0, n
+			if e.excludeSpecials && n > 2 {
+				start, end = 1, n-1
+			}
+			count := end - start
 			row := i * seqLen * hidden
-			for j := 0; j < n; j++ {
+			for j := start; j < end; j++ {
 				tok := data[row+j*hidden : row+(j+1)*hidden]
 				for d, x := range tok {
 					v[d] += x
 				}
 			}
 			for d := range v {
-				v[d] /= float32(n)
+				v[d] /= float32(count)
 			}
 		}
 		if norm := vector.Norm(v); norm > 0 {

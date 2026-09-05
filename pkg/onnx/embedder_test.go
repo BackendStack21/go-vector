@@ -1,6 +1,7 @@
 package onnx
 
 import (
+	"context"
 	"math"
 	"os"
 	"testing"
@@ -8,7 +9,10 @@ import (
 	"github.com/BackendStack21/go-vector/pkg/vector"
 )
 
-var _ vector.Embedder = (*Embedder)(nil)
+var (
+	_ vector.Embedder      = (*Embedder)(nil)
+	_ vector.BatchEmbedder = (*Embedder)(nil)
+)
 
 const (
 	testModel = "testdata/model.onnx"
@@ -126,6 +130,15 @@ func TestEmbedderStoreIntegration(t *testing.T) {
 		if r.ID == docs[2] {
 			t.Errorf("finance doc ranked in top 2 for a pets query: %v", results)
 		}
+	}
+}
+
+func TestEmbedderContextCanceled(t *testing.T) {
+	e := newTestEmbedder(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := e.EmbedContext(ctx, "hello"); err == nil {
+		t.Fatal("want context error")
 	}
 }
 

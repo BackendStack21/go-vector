@@ -26,4 +26,4 @@ Thumbs.db
 
 # Go
 /vendor/
-go-vector
+/go-vector

@@ -2,10 +2,6 @@ package vector
 
 import (
 	"encoding/gob"
-	"encoding/json"
-	"math"
-	"os"
-	"sort"
 )
 
 func init() {
@@ -19,253 +15,344 @@ type SearchResult struct {
 	Vector   Vector
 }
 
+// SearchHit is a Search result without a cloned vector.
+type SearchHit struct {
+	ID       string
+	Distance float32
+}
+
 // Store is an in-memory vector index with brute-force nearest-neighbor search.
-// Zero-allocation on read paths; safe for concurrent reads but not concurrent
-// read/write — guard with a sync.Mutex externally if needed.
+// Safe for concurrent reads but not concurrent read/write — use LockedStore
+// or an external sync.Mutex if writers are involved.
+//
+// Duplicate IDs are allowed: Add always appends. Get, Remove, Upsert, Has,
+// SetMeta, and Meta act on the first matching id.
 type Store struct {
 	vectors []Vector
 	ids     []string
 	metric  Metric
+
+	// packed is a row-major backing array used when every vector has the
+	// same length. vectors[i] then aliases packed[i*dims:(i+1)*dims].
+	packed   []float32
+	dims     int
+	packedOK bool
+
+	norms2 []float32      // cached Σv², parallel to vectors
+	byID   map[string]int // id → first index
+	meta   []map[string]string
 }
 
 // NewStore creates a Store using the given distance metric.
 func NewStore(metric Metric) *Store {
-	return &Store{metric: metric}
+	return &Store{metric: metric, byID: make(map[string]int)}
+}
+
+// Metric returns the store's distance metric.
+func (s *Store) Metric() Metric { return s.metric }
+
+// Len returns the number of vectors in the store.
+func (s *Store) Len() int { return len(s.vectors) }
+
+// Dims returns the dimensionality of the first stored vector, or 0 if empty.
+func (s *Store) Dims() int {
+	if len(s.vectors) == 0 {
+		return 0
+	}
+	if s.packedOK && s.dims > 0 {
+		return s.dims
+	}
+	return len(s.vectors[0])
+}
+
+// Has reports whether id is in the store (first-match).
+func (s *Store) Has(id string) bool {
+	_, ok := s.firstIndex(id)
+	return ok
+}
+
+// IDs returns a copy of the id list, including duplicates, in store order.
+func (s *Store) IDs() []string {
+	out := make([]string, len(s.ids))
+	copy(out, s.ids)
+	return out
+}
+
+// Clear removes every vector. The metric is unchanged.
+func (s *Store) Clear() {
+	s.vectors = nil
+	s.ids = nil
+	s.packed = nil
+	s.packedOK = false
+	s.dims = 0
+	s.norms2 = nil
+	s.byID = make(map[string]int)
+	s.meta = nil
 }
 
 // Add inserts a vector with the given id into the store.
 func (s *Store) Add(id string, v Vector) {
+	idx := len(s.ids)
 	s.ids = append(s.ids, id)
-	s.vectors = append(s.vectors, Clone(v))
+	cloned := s.appendVector(v)
+	s.vectors = append(s.vectors, cloned)
+	s.norms2 = append(s.norms2, dotSelf(cloned))
+	if s.meta != nil {
+		s.meta = append(s.meta, nil)
+	}
+	s.noteID(id, idx)
 }
 
-// Len returns the number of vectors in the store.
-func (s *Store) Len() int {
-	return len(s.vectors)
+// AddUnique inserts only if id is not already present. Returns true if added.
+func (s *Store) AddUnique(id string, v Vector) bool {
+	if _, ok := s.firstIndex(id); ok {
+		return false
+	}
+	s.Add(id, v)
+	return true
 }
 
-// Search returns the k nearest neighbors to the query vector.
-// If k > Len(), all vectors are returned.
-// If k <= 0, returns nil.
-func (s *Store) Search(query Vector, k int) []SearchResult {
-	n := len(s.vectors)
-	if k <= 0 || n == 0 {
-		return nil
+// Upsert replaces the first vector with id, or Add if id is new.
+func (s *Store) Upsert(id string, v Vector) {
+	if i, ok := s.firstIndex(id); ok {
+		s.replaceAt(i, v)
+		return
 	}
-	if k > n {
-		k = n
-	}
-
-	asc := s.metric.Ascending()
-
-	// scored pairs a stored-vector index with its distance/similarity score.
-	type scored struct {
-		idx   int
-		score float32
-	}
-
-	// worse reports whether score a ranks below score b for this metric, i.e.
-	// a is the better eviction candidate. For distances (ascending) a larger
-	// score is worse; for similarities a smaller score is worse.
-	worse := func(a, b float32) bool {
-		if asc {
-			return a > b
-		}
-		return a < b
-	}
-
-	// Maintain a bounded heap of the best k results seen so far. The root is
-	// always the worst of the kept set, so a better candidate evicts it in
-	// O(log k) — overall O(n·log k) versus a full O(n·log n) sort, and with no
-	// reflection (sort.Slice) on the hot path.
-	heap := make([]scored, 0, k)
-	siftUp := func(i int) {
-		for i > 0 {
-			parent := (i - 1) / 2
-			if !worse(heap[parent].score, heap[i].score) {
-				break
-			}
-			heap[parent], heap[i] = heap[i], heap[parent]
-			i = parent
-		}
-	}
-	siftDown := func() {
-		i := 0
-		for {
-			l, r, worst := 2*i+1, 2*i+2, i
-			if l < len(heap) && worse(heap[worst].score, heap[l].score) {
-				worst = l
-			}
-			if r < len(heap) && worse(heap[worst].score, heap[r].score) {
-				worst = r
-			}
-			if worst == i {
-				break
-			}
-			heap[i], heap[worst] = heap[worst], heap[i]
-			i = worst
-		}
-	}
-
-	scoreFn := s.scorer(query)
-	for i := 0; i < n; i++ {
-		score := scoreFn(s.vectors[i])
-		if len(heap) < k {
-			heap = append(heap, scored{i, score})
-			siftUp(len(heap) - 1)
-		} else if worse(heap[0].score, score) {
-			// Candidate beats the current worst kept result.
-			heap[0] = scored{i, score}
-			siftDown()
-		}
-	}
-
-	// Heap holds the top k unordered; sort best-first for the caller.
-	sort.Slice(heap, func(i, j int) bool {
-		return worse(heap[j].score, heap[i].score)
-	})
-
-	results := make([]SearchResult, len(heap))
-	for i, h := range heap {
-		results[i] = SearchResult{
-			ID:       s.ids[h.idx],
-			Distance: h.score,
-			Vector:   Clone(s.vectors[h.idx]),
-		}
-	}
-	return results
-}
-
-// scorer returns a closure that scores a stored vector against query under the
-// store's metric. For CosineDistance the query's self–dot product is computed
-// once here rather than re-derived for every stored vector inside Cosine.
-func (s *Store) scorer(query Vector) func(Vector) float32 {
-	if s.metric != CosineDistance {
-		return func(v Vector) float32 { return Distance(query, v, s.metric) }
-	}
-	var qq float32
-	for _, x := range query {
-		qq += x * x
-	}
-	qqf := float64(qq)
-	return func(v Vector) float32 {
-		if len(v) != len(query) || qq == 0 {
-			return 1 // CosineDist of a zero/mismatched vector: 1 - 0
-		}
-		var dot, vv float32
-		for i := range query {
-			dot += query[i] * v[i]
-			vv += v[i] * v[i]
-		}
-		if vv == 0 {
-			return 1
-		}
-		return 1 - dot/float32(math.Sqrt(qqf*float64(vv)))
-	}
+	s.Add(id, v)
 }
 
 // Get returns the vector for the given id, or nil if not found.
 func (s *Store) Get(id string) Vector {
-	for i := range s.ids {
-		if s.ids[i] == id {
-			return Clone(s.vectors[i])
-		}
+	i, ok := s.firstIndex(id)
+	if !ok {
+		return nil
 	}
-	return nil
+	return Clone(s.vectors[i])
 }
 
-// Remove deletes the vector with the given id. Returns true if found and removed.
+// Remove deletes the first vector with the given id. Returns true if removed.
 func (s *Store) Remove(id string) bool {
-	for i := range s.ids {
-		if s.ids[i] == id {
-			last := len(s.ids) - 1
-			s.ids[i] = s.ids[last]
+	i, ok := s.firstIndex(id)
+	if !ok {
+		return false
+	}
+	last := len(s.ids) - 1
+	movedID := s.ids[last]
+
+	if i != last {
+		s.ids[i] = s.ids[last]
+		if s.packedOK && s.dims > 0 {
+			offI, offL := i*s.dims, last*s.dims
+			copy(s.packed[offI:offI+s.dims], s.packed[offL:offL+s.dims])
+			s.vectors[i] = Vector(s.packed[offI : offI+s.dims : offI+s.dims])
+		} else {
 			s.vectors[i] = s.vectors[last]
-			s.ids = s.ids[:last]
-			s.vectors = s.vectors[:last]
-			return true
+		}
+		s.norms2[i] = s.norms2[last]
+		if s.meta != nil {
+			s.meta[i] = s.meta[last]
 		}
 	}
-	return false
+
+	s.ids = s.ids[:last]
+	s.vectors = s.vectors[:last]
+	s.norms2 = s.norms2[:last]
+	if s.packedOK {
+		if last == 0 {
+			s.packed = s.packed[:0]
+			s.dims = 0
+		} else {
+			s.packed = s.packed[:last*s.dims]
+		}
+	}
+	if s.meta != nil {
+		s.meta = s.meta[:last]
+	}
+	s.repairByID(id, movedID, i, last)
+	return true
 }
 
-// storeData is the serializable representation of a Store for persistence.
-type storeData struct {
-	Vectors []Vector
-	IDs     []string
-	Metric  Metric
+// SetMeta replaces metadata on the first matching id. meta is cloned.
+// Passing nil clears metadata for that id. Returns false if id is missing.
+func (s *Store) SetMeta(id string, meta map[string]string) bool {
+	i, ok := s.firstIndex(id)
+	if !ok {
+		return false
+	}
+	s.ensureMeta()
+	s.meta[i] = cloneMeta(meta)
+	return true
 }
 
-// Save writes the store to a file using Go's gob encoder (compact binary format).
-// Overwrites the file if it exists.
-func (s *Store) Save(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+// Meta returns a clone of the metadata for the first matching id, or nil.
+func (s *Store) Meta(id string) map[string]string {
+	i, ok := s.firstIndex(id)
+	if !ok || s.meta == nil {
+		return nil
 	}
-	defer f.Close()
-
-	data := storeData{
-		Vectors: s.vectors,
-		IDs:     s.ids,
-		Metric:  s.metric,
-	}
-	return gob.NewEncoder(f).Encode(data)
+	return cloneMeta(s.meta[i])
 }
 
-// Load restores the store from a gob-encoded file. Existing data in the store
-// is replaced. Returns an error if the file cannot be read or decoded.
-func (s *Store) Load(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
+func (s *Store) appendVector(v Vector) Vector {
+	if len(s.vectors) == 0 {
+		s.dims = len(v)
+		s.packedOK = true
+		s.packed = append(s.packed[:0], v...)
+		if s.dims == 0 {
+			return Vector{}
+		}
+		return Vector(s.packed[0:s.dims:s.dims])
 	}
-	defer f.Close()
-
-	var data storeData
-	if err := gob.NewDecoder(f).Decode(&data); err != nil {
-		return err
+	if s.packedOK && len(v) == s.dims {
+		if s.dims == 0 {
+			return Vector{}
+		}
+		start := len(s.packed)
+		oldCap := cap(s.packed)
+		s.packed = append(s.packed, v...)
+		if cap(s.packed) != oldCap {
+			s.relinkPacked()
+		}
+		return Vector(s.packed[start : start+s.dims : start+s.dims])
 	}
-
-	s.vectors = data.Vectors
-	s.ids = data.IDs
-	s.metric = data.Metric
-	return nil
+	if s.packedOK {
+		s.unpack()
+	}
+	return Clone(v)
 }
 
-// SaveJSON writes the store to a file as human-readable JSON.
-func (s *Store) SaveJSON(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+func (s *Store) unpack() {
+	for i := range s.vectors {
+		s.vectors[i] = Clone(s.vectors[i])
 	}
-	defer f.Close()
-
-	data := storeData{
-		Vectors: s.vectors,
-		IDs:     s.ids,
-		Metric:  s.metric,
-	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(data)
+	s.packed = nil
+	s.packedOK = false
+	s.dims = 0
 }
 
-// LoadJSON restores the store from a JSON file. Existing data is replaced.
-func (s *Store) LoadJSON(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
+func (s *Store) replaceAt(i int, v Vector) {
+	if s.packedOK && len(v) == s.dims && s.dims > 0 {
+		off := i * s.dims
+		copy(s.packed[off:off+s.dims], v)
+		s.vectors[i] = Vector(s.packed[off : off+s.dims : off+s.dims])
+	} else if s.packedOK {
+		s.unpack()
+		s.vectors[i] = Clone(v)
+	} else {
+		s.vectors[i] = Clone(v)
 	}
-	defer f.Close()
+	s.norms2[i] = dotSelf(s.vectors[i])
+}
 
-	var data storeData
-	if err := json.NewDecoder(f).Decode(&data); err != nil {
-		return err
+func (s *Store) firstIndex(id string) (int, bool) {
+	if s.byID != nil {
+		i, ok := s.byID[id]
+		return i, ok
 	}
+	for i, x := range s.ids {
+		if x == id {
+			return i, true
+		}
+	}
+	return 0, false
+}
 
-	s.vectors = data.Vectors
-	s.ids = data.IDs
-	s.metric = data.Metric
-	return nil
+func (s *Store) noteID(id string, idx int) {
+	if s.byID == nil {
+		s.byID = make(map[string]int)
+	}
+	if _, exists := s.byID[id]; !exists {
+		s.byID[id] = idx
+	}
+}
+
+func (s *Store) repairByID(removedID, movedID string, i, last int) {
+	if s.byID == nil {
+		return
+	}
+	delete(s.byID, removedID)
+	for j, id := range s.ids {
+		if id == removedID {
+			s.byID[removedID] = j
+			break
+		}
+	}
+	if i != last && movedID != removedID {
+		if prev, ok := s.byID[movedID]; ok && prev == last {
+			s.byID[movedID] = i
+		}
+	}
+}
+
+func (s *Store) rebuildAux() {
+	s.byID = make(map[string]int, len(s.ids))
+	for i, id := range s.ids {
+		if _, exists := s.byID[id]; !exists {
+			s.byID[id] = i
+		}
+	}
+	s.norms2 = make([]float32, len(s.vectors))
+	for i, v := range s.vectors {
+		s.norms2[i] = dotSelf(v)
+	}
+	s.repackIfUniform()
+}
+
+func (s *Store) repackIfUniform() {
+	s.packed = nil
+	s.packedOK = false
+	s.dims = 0
+	if len(s.vectors) == 0 {
+		s.packedOK = true
+		return
+	}
+	d := len(s.vectors[0])
+	for i := 1; i < len(s.vectors); i++ {
+		if len(s.vectors[i]) != d {
+			return
+		}
+	}
+	s.dims = d
+	s.packedOK = true
+	if d == 0 {
+		return
+	}
+	s.packed = make([]float32, len(s.vectors)*d)
+	for i, v := range s.vectors {
+		copy(s.packed[i*d:(i+1)*d], v)
+		s.vectors[i] = Vector(s.packed[i*d : (i+1)*d : (i+1)*d])
+	}
+}
+
+func (s *Store) ensureMeta() {
+	if s.meta == nil {
+		s.meta = make([]map[string]string, len(s.ids))
+	}
+}
+
+func (s *Store) relinkPacked() {
+	if !s.packedOK || s.dims == 0 {
+		return
+	}
+	for i := range s.vectors {
+		s.vectors[i] = Vector(s.packed[i*s.dims : (i+1)*s.dims : (i+1)*s.dims])
+	}
+}
+
+func (s *Store) row(i int) Vector {
+	if s.packedOK && s.dims > 0 {
+		return Vector(s.packed[i*s.dims : (i+1)*s.dims])
+	}
+	return s.vectors[i]
+}
+
+func cloneMeta(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

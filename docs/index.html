@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>go-vector — Vector Similarity in Pure Go</title>
-  <meta name="description" content="Zero-dependency vector similarity library for Go. Cosine, Euclidean, Manhattan distances and brute-force nearest-neighbor search. Pure Go, no CGo, no BLAS.">
+  <meta name="description" content="Zero-dependency vector similarity library for Go. Six metrics, exact and HNSW search, embeddings, and disk persistence. Pure Go, no CGo, no BLAS.">
   <meta property="og:title" content="go-vector — Vector Similarity in Pure Go">
-  <meta property="og:description" content="Zero-dependency vector similarity library. Four distance metrics, in-memory vector store, pure Go.">
+  <meta property="og:description" content="Zero-dependency vector similarity library. Six distance metrics, exact store plus optional HNSW, pure Go.">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
   <meta property="og:image" content="https://21no.de/logo-v2.png">
@@ -15,7 +15,7 @@
   <meta property="og:image:alt" content="21no.de logo">
   <meta property="og:url" content="https://go-vector.21no.de">
   <link rel="canonical" href="https://go-vector.21no.de">
-  <meta name="keywords" content="vector similarity, Go, cosine distance, Euclidean, Manhattan, nearest neighbor, zero-dependency, embeddings">
+  <meta name="keywords" content="vector similarity, Go, cosine distance, Euclidean, Manhattan, HNSW, nearest neighbor, zero-dependency, embeddings">
   <meta name="author" content="21no.de">
   <meta name="theme-color" content="#0a0a0b">
   <link rel="icon" type="image/png" href="https://21no.de/logo-v2.png">
@@ -52,6 +52,8 @@
     /* Card icon colors */
     .card-icon.blue { background: var(--accent-subtle); color: var(--accent); }
     .card-icon.orange { background: rgba(251,146,60,0.1); color: #fb923c; }
+    .card-icon.green { background: var(--green-subtle); color: var(--green); }
+    .card-icon.purple { background: rgba(192,132,252,0.12); color: #c084fc; }
 
     /* Use case sections */
     .usecase {
@@ -153,7 +155,7 @@
     "@type": "WebSite",
     "name": "go-vector",
     "url": "https://go-vector.21no.de",
-    "description": "Zero-dependency vector similarity library for Go.",
+    "description": "Zero-dependency vector similarity library for Go. Six metrics, exact and HNSW search, embeddings, persistence.",
     "about": {
       "@type": "SoftwareApplication",
       "name": "go-vector",
@@ -175,6 +177,7 @@
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#embedding">Embedding</a>
+      <a href="#scale">Scale</a>
       <a href="#persistence">Persistence</a>
       <a href="#performance">Performance</a>
       <a href="#security">Security</a>
@@ -187,9 +190,9 @@
 <!-- Hero -->
 <section class="hero">
   <div class="container">
-    <div class="hero-badge"><span class="dot"></span> Zero dependencies. Text embedding. Disk persistence.</div>
+    <div class="hero-badge"><span class="dot"></span> Zero-dependency core. Exact + HNSW search. Disk persistence.</div>
     <h1>Vector similarity<br>in <span class="accent">pure Go</span></h1>
-    <p>Cosine, Euclidean, Manhattan. Text embedding. Disk persistence. Brute-force nearest-neighbor search. Zero allocations on distance computation. All pure Go.</p>
+    <p>Six metrics. Exact packed search or optional HNSW. Text embedding. Atomic gob/JSON persistence. Zero allocations on distance computation. All pure Go.</p>
     <div class="hero-actions">
       <a href="#install" class="btn btn-primary">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v10M4 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -238,7 +241,7 @@
         <div class="label">dependencies</div>
       </div>
       <div class="stat">
-        <div class="num">4</div>
+        <div class="num">6</div>
         <div class="label">distance metrics</div>
       </div>
       <div class="stat">
@@ -246,8 +249,8 @@
         <div class="label">allocations per distance</div>
       </div>
       <div class="stat">
-        <div class="num">96.8%</div>
-        <div class="label">test coverage</div>
+        <div class="num">v1.3</div>
+        <div class="label">gob files still load</div>
       </div>
     </div>
   </div>
@@ -258,7 +261,8 @@
   <div class="container">
     <div class="section-label">Core API</div>
     <h2>Everything you need for<br>vector similarity</h2>
-    <p class="lead">Ten vector operations, four distance metrics, and a production-ready in-memory vector store. All zero-allocation on read paths.</p>
+    <p class="lead">Ten vector operations, six distance metrics, and a production-ready in-memory vector store. All zero-allocation on read paths.</p>
+    <p class="lead">Optional packages add an HNSW approximate index, int8 quantization, and a mutex-wrapped store. The core <code>pkg/vector</code> API stays stdlib-only and backward compatible with v1.3 gob/JSON files.</p>
 
     <div class="grid-3" style="margin-bottom: 24px;">
       <div class="card">
@@ -273,14 +277,14 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         </div>
         <h3>Distance Metrics</h3>
-        <p>Cosine, Euclidean, Manhattan, Dot Product. Single-pass computation. Choose lower-is-better or higher-is-better sorting.</p>
+        <p>Cosine, Euclidean, Manhattan, Dot Product, Chebyshev, Hamming. Single-pass computation. Choose lower-is-better or higher-is-better sorting.</p>
       </div>
       <div class="card">
         <div class="card-icon purple">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></svg>
         </div>
         <h3>Vector Store</h3>
-        <p>Add, get, remove, search. Top-K nearest-neighbor with any metric. Cloned outputs — no accidental mutation.</p>
+        <p>Add, upsert, metadata, filters, radius, and top-k. Cloned outputs — no accidental mutation. <code>LockedStore</code> when writers share the index.</p>
       </div>
     </div>
 
@@ -297,7 +301,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         </div>
         <h3>Disk Persistence</h3>
-        <p>Gob-encode your store to disk. Full roundtrip with metric preservation. JSON export for debugging. ~60MB per 10K vectors at 1536d.</p>
+        <p>Gob or JSON, path or <code>io.Writer</code>. <code>SaveAtomic</code> for temp+rename. v1.3 files still load. ~60MB per 10K vectors at 1536d.</p>
       </div>
       <div class="card">
         <div class="card-icon green">
@@ -305,6 +309,30 @@
         </div>
         <h3>Minimal Surface</h3>
         <p>Standard library only. No CGo, no BLAS, no syscalls, no I/O. Compiles anywhere Go runs.</p>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-top: 16px;">
+      <div class="card">
+        <div class="card-icon purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="8" cy="18" r="2"/><circle cx="17" cy="17" r="2"/><path d="M8 8l8 0M8 16l7-7"/></svg>
+        </div>
+        <h3>HNSW</h3>
+        <p>Pure-Go approximate index in <code>pkg/hnsw</code>. Same <code>Vector</code> type. Exact <code>Store</code> stays brute-force.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon orange">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h6"/></svg>
+        </div>
+        <h3>Int8 Quantization</h3>
+        <p><code>pkg/quantize</code> packs vectors to int8 without changing float32 <code>Store</code> precision. Optional sibling, not a silent mode flag.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon blue">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 7h16M4 12h10M4 17h13"/></svg>
+        </div>
+        <h3>Filtered Search</h3>
+        <p><code>SearchOpts</code> adds predicates, metadata equality, score thresholds, parallel scan, and ID-only results that skip cloning.</p>
       </div>
     </div>
   </div>
@@ -332,15 +360,47 @@
     <div class="usecase">
       <div>
         <h3>Swap backends anytime</h3>
-        <p>Implement the <code>Embedder</code> interface to plug in OpenAI, Ollama, or sentence-transformers. One method to implement per backend. Your search code never changes.</p>
+        <p>Implement <code>Embedder</code> for a custom backend. Batching is a separate <code>BatchEmbedder</code> so existing implementations keep compiling. Built-in HTTP talks to OpenAI, Ollama, LM Studio, and Azure-style paths.</p>
       </div>
       <div class="code-mini"><pre><span class="kw">type</span> <span class="pkg">Embedder</span> <span class="kw">interface</span> {
     <span class="fn">Embed</span>(text <span class="type">string</span>) (<span class="pkg">Vector</span>, <span class="type">error</span>)
     <span class="fn">Dims</span>() <span class="type">int</span>
 }
 
-<span class="cmt">// OpenAIEmbedder, OllamaEmbedder, etc.</span>
-<span class="kw">var</span> emb <span class="pkg">vector.Embedder</span> = <span class="fn">NewOpenAIEmbedder</span>()</pre></div>
+e := vector.<span class="fn">NewHTTPEmbedder</span>(url, model, <span class="fn">0</span>,
+    vector.<span class="fn">WithRetry</span>(<span class="fn">3</span>))</pre></div>
+    </div>
+  </div>
+</section>
+
+<!-- Scale -->
+<section class="section" id="scale">
+  <div class="container">
+    <div class="section-label">Scale</div>
+    <h2>Exact first.<br>Approximate when you need it.</h2>
+    <p class="lead">Uniform-length stores pack into a row-major array with cached norms. When <em>n</em> outgrows a linear scan, switch to HNSW without changing embedders or <code>Vector</code>.</p>
+
+    <div class="usecase">
+      <div>
+        <h3>HNSW graph</h3>
+        <p>Sibling package, stdlib plus <code>pkg/vector</code> only. Own gob format. <code>RecallAgainst</code> compares to an exact store. Re-rank candidates with <code>vector.Rerank</code> when you want exact scores on a shortlist.</p>
+      </div>
+      <div class="code-mini"><pre><span class="kw">idx</span> := hnsw.<span class="fn">New</span>(<span class="fn">384</span>, vector.<span class="pkg">CosineDistance</span>)
+<span class="kw">idx</span>.<span class="fn">Add</span>(<span class="str">"doc"</span>, vec)
+hits := <span class="kw">idx</span>.<span class="fn">Search</span>(query, <span class="fn">10</span>)
+<span class="cmt">// optional exact rescore</span>
+hits = vector.<span class="fn">Rerank</span>(query, hits, vector.<span class="pkg">CosineDistance</span>, <span class="fn">5</span>)</pre></div>
+    </div>
+
+    <div class="usecase">
+      <div>
+        <h3>Int8 store</h3>
+        <p>Quantize for memory. <code>Int8Store</code> is a new type so float32 search cannot silently lose precision. Reconstruct or keep a float32 store for exact ranking.</p>
+      </div>
+      <div class="code-mini"><pre>q, scale := quantize.<span class="fn">ToInt8</span>(vec)
+qs := quantize.<span class="fn">NewInt8Store</span>(vector.<span class="pkg">CosineDistance</span>)
+qs.<span class="fn">Add</span>(<span class="str">"doc"</span>, vec)
+qs.<span class="fn">Search</span>(query, <span class="fn">10</span>)</pre></div>
     </div>
   </div>
 </section>
@@ -350,14 +410,14 @@
   <div class="container">
     <div class="section-label">Persistence</div>
     <h2>Save. Load. Repeat.</h2>
-    <p class="lead">Gob-encode your entire store to a file. Restore with metric and all data intact. JSON export for debugging and inspection.</p>
+    <p class="lead">Gob-encode your entire store to a file. Restore with metric, metadata, and all data intact. JSON export for debugging. v1.3 files still load.</p>
 
     <div class="usecase">
       <div>
-        <h3>Gob — compact and fast</h3>
-        <p>Binary encoding via <code>encoding/gob</code>. Full roundtrip preserves IDs, vectors, and metric. ~200ms save for 10K vectors at 1536d.</p>
+        <h3>Gob — compact and atomic</h3>
+        <p>Binary encoding via <code>encoding/gob</code>. <code>SaveAtomic</code> writes a temp file, fsyncs, then renames. Streaming <code>WriteTo</code> / <code>ReadFrom</code> for any <code>io.Writer</code>. Corrupt length mismatches are rejected.</p>
       </div>
-      <div class="code-mini"><pre>store.<span class="fn">Save</span>(<span class="str">"/data/vectors.db"</span>)
+      <div class="code-mini"><pre>store.<span class="fn">SaveAtomic</span>(<span class="str">"/data/vectors.db"</span>)
 
 restored := vector.<span class="fn">NewStore</span>(...)
 restored.<span class="fn">Load</span>(<span class="str">"/data/vectors.db"</span>)
@@ -408,7 +468,7 @@ restored, _ := <span class="pkg">vector</span>.<span class="fn">LoadEmbedder</sp
       </tbody>
     </table>
 
-    <p style="margin-top: 16px; font-size: 14px; color: var(--text-tertiary);">Brute-force search is O(n·d). Suitable for datasets up to ~100K vectors. Pair with an approximate index for larger scale.</p>
+    <p style="margin-top: 16px; font-size: 14px; color: var(--text-tertiary);">Brute-force search is O(n·d). Suitable for datasets up to ~100K vectors. Use <code>pkg/hnsw</code> beyond that, or <code>SearchIDs</code> when you do not need cloned vectors.</p>
   </div>
 </section>
 
@@ -417,7 +477,7 @@ restored, _ := <span class="pkg">vector</span>.<span class="fn">LoadEmbedder</sp
   <div class="container">
     <div class="section-label">Security</div>
     <h2>Minimal attack surface</h2>
-    <p class="lead">Pure float32 math. No CGo, no syscalls, no I/O, no network. Every edge case returns zero/nil — the library never panics.</p>
+    <p class="lead">Pure float32 math in the core. No CGo, no syscalls. Query paths return zero/nil instead of panicking. Persistence validates structure before replacing in-memory state.</p>
 
     <div class="card security-card">
       <div class="security-row">
@@ -441,9 +501,14 @@ restored, _ := <span class="pkg">vector</span>.<span class="fn">LoadEmbedder</sp
         <span class="desc">Dot products of large vectors (>10⁵ dims with large magnitudes) can overflow. Normalize first.</span>
       </div>
       <div class="security-row">
+        <span class="badge g">SAFE</span>
+        <span style="flex: 1;">Load validation</span>
+        <span class="desc">Gob/JSON with mismatched IDs, vectors, metadata, or HNSW edges is rejected. Existing state is left unchanged.</span>
+      </div>
+      <div class="security-row">
         <span class="badge y">AWARE</span>
         <span style="flex: 1;">Thread safety</span>
-        <span class="desc">Store is read-safe but not write-safe concurrently. Guard with <code>sync.Mutex</code>.</span>
+        <span class="desc">Store is read-safe but not write-safe. Use <code>LockedStore</code> or an external mutex when writers are involved.</span>
       </div>
     </div>
   </div>
@@ -454,7 +519,7 @@ restored, _ := <span class="pkg">vector</span>.<span class="fn">LoadEmbedder</sp
     <div class="container" style="text-align: center;">
     <div class="section-label">Get Started</div>
     <h2>Install</h2>
-    <p class="lead" style="margin: 16px auto 0;">One import. Zero dependencies.</p>
+    <p class="lead" style="margin: 16px auto 0;">One import. Zero-dependency core. Optional HNSW, ONNX, and int8 siblings.</p>
 
     <div class="install-box">
       <span class="prompt">$</span>

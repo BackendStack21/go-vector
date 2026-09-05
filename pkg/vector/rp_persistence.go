@@ -2,6 +2,8 @@ package vector
 
 import (
 	"encoding/gob"
+	"fmt"
+	"io"
 	"os"
 )
 
@@ -23,12 +25,17 @@ type rpPersistData struct {
 	OutputDim int
 	Scale     float32
 	Proj      [][]rpRow // per-vocab-index projection entries
+	// Optional fields (zero on v1 files):
+	Seed        int64
+	HasSeed     bool
+	NGrams      int
+	HashBuckets int
+	TFIDF       bool
+	MinTokenLen int
+	IDF         []float32
 }
 
-// SaveEmbedder writes the RandomProjections state to a gob file.
-// The output dimension and vocabulary are preserved so that future
-// Embed() calls produce the same vectors for the same text.
-func (rp *RandomProjections) SaveEmbedder(path string) error {
+func (rp *RandomProjections) persist() rpPersistData {
 	proj := make([][]rpRow, len(rp.proj))
 	for i, row := range rp.proj {
 		proj[i] = make([]rpRow, len(row))
@@ -36,19 +43,97 @@ func (rp *RandomProjections) SaveEmbedder(path string) error {
 			proj[i][j] = rpRow{Dim: e.dim, Val: e.val}
 		}
 	}
-	data := rpPersistData{
-		Vocab:     rp.vocab,
-		Tokens:    rp.tokens,
-		OutputDim: rp.outputDim,
-		Scale:     rp.scale,
-		Proj:      proj,
+	return rpPersistData{
+		Vocab:       rp.vocab,
+		Tokens:      rp.tokens,
+		OutputDim:   rp.outputDim,
+		Scale:       rp.scale,
+		Proj:        proj,
+		Seed:        rp.seed,
+		HasSeed:     rp.hasSeed,
+		NGrams:      rp.ngrams,
+		HashBuckets: rp.hashBuckets,
+		TFIDF:       rp.tfidf,
+		MinTokenLen: rp.minTokenLen,
+		IDF:         rp.idf,
 	}
+}
+
+func validateRPPersist(data rpPersistData) error {
+	if data.OutputDim < 0 {
+		return fmt.Errorf("vector: corrupt embedder: negative output dim %d", data.OutputDim)
+	}
+	for i, row := range data.Proj {
+		for _, e := range row {
+			if e.Dim < 0 || (data.OutputDim > 0 && e.Dim >= data.OutputDim) || (data.OutputDim == 0 && e.Dim != 0) {
+				return fmt.Errorf("vector: corrupt embedder: proj[%d] dim %d outside [0,%d)", i, e.Dim, data.OutputDim)
+			}
+		}
+	}
+	if n := len(data.IDF); n > 0 && n != len(data.Tokens) && n != len(data.Proj) {
+		return fmt.Errorf("vector: corrupt embedder: %d IDF weights, %d tokens", n, len(data.Tokens))
+	}
+	return nil
+}
+
+func rpFromPersist(data rpPersistData) (*RandomProjections, error) {
+	if err := validateRPPersist(data); err != nil {
+		return nil, err
+	}
+	proj := make([][]projEntry, len(data.Proj))
+	for i, row := range data.Proj {
+		proj[i] = make([]projEntry, len(row))
+		for j, e := range row {
+			proj[i][j] = projEntry{dim: e.Dim, val: e.Val}
+		}
+	}
+	ngrams := data.NGrams
+	if ngrams <= 0 {
+		ngrams = 1
+	}
+	minLen := data.MinTokenLen
+	if minLen <= 0 {
+		minLen = 2
+	}
+	seed := data.Seed
+	hasSeed := data.HasSeed
+	if !hasSeed && seed == 0 {
+		seed = 42
+		hasSeed = true
+	}
+	return &RandomProjections{
+		vocab:       data.Vocab,
+		tokens:      data.Tokens,
+		outputDim:   data.OutputDim,
+		proj:        proj,
+		scale:       data.Scale,
+		seed:        seed,
+		hasSeed:     hasSeed,
+		ngrams:      ngrams,
+		hashBuckets: data.HashBuckets,
+		tfidf:       data.TFIDF,
+		minTokenLen: minLen,
+		idf:         data.IDF,
+	}, nil
+}
+
+// SaveEmbedder writes the RandomProjections state to a gob file.
+// The output dimension and vocabulary are preserved so that future
+// Embed() calls produce the same vectors for the same text.
+func (rp *RandomProjections) SaveEmbedder(path string) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return gob.NewEncoder(f).Encode(data)
+	return gob.NewEncoder(f).Encode(rp.persist())
+}
+
+// WriteTo gob-encodes embedder state onto w.
+func (rp *RandomProjections) WriteTo(w io.Writer) (int64, error) {
+	cw := &countingWriter{w: w}
+	err := gob.NewEncoder(cw).Encode(rp.persist())
+	return cw.n, err
 }
 
 // LoadEmbedder reads RandomProjections state from a gob file and returns
@@ -60,23 +145,14 @@ func LoadEmbedder(path string) (*RandomProjections, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return ReadEmbedder(f)
+}
+
+// ReadEmbedder gob-decodes a RandomProjections embedder from r.
+func ReadEmbedder(r io.Reader) (*RandomProjections, error) {
 	var data rpPersistData
-	if err := gob.NewDecoder(f).Decode(&data); err != nil {
+	if err := gob.NewDecoder(r).Decode(&data); err != nil {
 		return nil, err
 	}
-	// Reconstruct the internal proj matrix
-	proj := make([][]projEntry, len(data.Proj))
-	for i, row := range data.Proj {
-		proj[i] = make([]projEntry, len(row))
-		for j, e := range row {
-			proj[i][j] = projEntry{dim: e.Dim, val: e.Val}
-		}
-	}
-	return &RandomProjections{
-		vocab:     data.Vocab,
-		tokens:    data.Tokens,
-		outputDim: data.OutputDim,
-		proj:      proj,
-		scale:     data.Scale,
-	}, nil
+	return rpFromPersist(data)
 }
