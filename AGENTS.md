@@ -21,7 +21,6 @@ pkg/quantize/                ← optional int8 quantization + Int8Store
 cmd/go-vector/               ← minimal CLI demo
 docs/                        ← GitHub Pages landing page
   index.html                 Dark-themed single-page site
-  EXTENSION_PLAN.md          Backward-compatible performance/feature roadmap
   .nojekyll                  GitHub Pages raw HTML flag
 ```
 
@@ -75,9 +74,9 @@ Target: >95% coverage. 40 tests, 96.8% currently.
 3. Add test file with Fit/Embed/determinism/similarity tests
 4. Document in README under Text Embedding section
 
-## Extension plan
+## Compatibility
 
-Holistic, backward-compatible performance and feature roadmap: `docs/EXTENSION_PLAN.md`. New work should follow that contract (additive APIs, `pkg/vector` stays stdlib-only, existing tests are the compatibility suite).
+New work stays additive: do not change existing exported signatures or semantics. `pkg/vector` stays stdlib-only. Existing tests plus `pkg/vector/testdata/compat/` are the compatibility suite. Document user-facing APIs in `README.md` and `docs/index.html`.
 
 ## Adding a New Metric
 
