@@ -280,6 +280,10 @@ Distance functions are **zero-allocation**. Cosine and Euclidean compute in a si
 - **Graceful degradation** — mismatched lengths return zero/nil, never panic
 - **Deterministic embeddings** — fixed seed (42) for reproducible results
 
+## Roadmap
+
+Performance and feature work is planned as additive v1.x extensions — existing signatures and semantics stay put. See [docs/EXTENSION_PLAN.md](docs/EXTENSION_PLAN.md) for the compatibility contract, the audit of current hot paths, and the phased PR sequence (introspection → packed search → store features → optional HNSW).
+
 ## License
 
 MIT

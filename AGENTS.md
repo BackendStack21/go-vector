@@ -19,6 +19,7 @@ pkg/onnx/                    ← local neural embeddings (depends on onnxruntime
 cmd/go-vector/               ← minimal CLI demo
 docs/                        ← GitHub Pages landing page
   index.html                 Dark-themed single-page site
+  EXTENSION_PLAN.md          Backward-compatible performance/feature roadmap
   .nojekyll                  GitHub Pages raw HTML flag
 ```
 
@@ -71,6 +72,10 @@ Target: >95% coverage. 40 tests, 96.8% currently.
 2. Add constructor function
 3. Add test file with Fit/Embed/determinism/similarity tests
 4. Document in README under Text Embedding section
+
+## Extension plan
+
+Holistic, backward-compatible performance and feature roadmap: `docs/EXTENSION_PLAN.md`. New work should follow that contract (additive APIs, `pkg/vector` stays stdlib-only, existing tests are the compatibility suite).
 
 ## Adding a New Metric
 
