@@ -2,6 +2,7 @@ package vector
 
 import (
 	"bytes"
+	"encoding/gob"
 	"testing"
 )
 
@@ -73,5 +74,36 @@ func TestRandomProjectionsWriteRead(t *testing.T) {
 	w2, _ := got.Embed("the cat")
 	if !Equal(w1, w2) {
 		t.Fatal("roundtrip embed")
+	}
+}
+
+func TestReadEmbedderRejectsBadProj(t *testing.T) {
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(rpPersistData{
+		OutputDim: 4,
+		Proj:      [][]rpRow{{{Dim: 99, Val: 1}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEmbedder(&buf); err == nil {
+		t.Fatal("expected corrupt embedder error")
+	}
+
+	buf.Reset()
+	if err := gob.NewEncoder(&buf).Encode(rpPersistData{OutputDim: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadEmbedder(&buf); err == nil {
+		t.Fatal("expected negative dim error")
+	}
+
+	rp := &RandomProjections{
+		outputDim: 2,
+		vocab:     map[string]int{"x": 0},
+		tokens:    []string{"x"},
+		proj:      [][]projEntry{{{dim: 8, val: 1}}},
+	}
+	if _, err := rp.Embed("x"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -5,6 +5,7 @@ package hnsw
 
 import (
 	"encoding/gob"
+	"fmt"
 	"math"
 	"math/rand"
 	"os"
@@ -160,7 +161,7 @@ func (idx *Index) Add(id string, v vector.Vector) {
 
 // Search returns up to k approximate nearest neighbors.
 func (idx *Index) Search(query vector.Vector, k int) []vector.SearchResult {
-	if k <= 0 || len(idx.nodes) == 0 || idx.entry < 0 {
+	if k <= 0 || len(idx.nodes) == 0 || idx.entry < 0 || idx.entry >= len(idx.nodes) {
 		return nil
 	}
 	start := idx.entry
@@ -235,8 +236,7 @@ func (idx *Index) Load(path string) error {
 	if err := gob.NewDecoder(f).Decode(&data); err != nil {
 		return err
 	}
-	idx.restore(data)
-	return nil
+	return idx.restore(data)
 }
 
 type indexData struct {
@@ -268,25 +268,82 @@ func (idx *Index) snapshot() indexData {
 	return data
 }
 
-func (idx *Index) restore(data indexData) {
+func validateIndexData(data indexData) error {
+	n := len(data.IDs)
+	if len(data.Vecs) != n || len(data.Neigh) != n {
+		return fmt.Errorf("hnsw: corrupt index: %d IDs, %d vectors, %d neighbor lists", n, len(data.Vecs), len(data.Neigh))
+	}
+	if n == 0 {
+		if data.Entry != -1 && data.Entry != 0 {
+			return fmt.Errorf("hnsw: corrupt index: empty graph has entry %d", data.Entry)
+		}
+		return nil
+	}
+	if data.Entry < 0 || data.Entry >= n {
+		return fmt.Errorf("hnsw: corrupt index: entry %d out of range [0,%d)", data.Entry, n)
+	}
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		if _, dup := seen[data.IDs[i]]; dup {
+			return fmt.Errorf("hnsw: corrupt index: duplicate id %q", data.IDs[i])
+		}
+		seen[data.IDs[i]] = struct{}{}
+		for _, layer := range data.Neigh[i] {
+			for _, nb := range layer {
+				if nb < 0 || nb >= n {
+					return fmt.Errorf("hnsw: corrupt index: neighbor %d out of range [0,%d)", nb, n)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (idx *Index) restore(data indexData) error {
+	if err := validateIndexData(data); err != nil {
+		return err
+	}
+	n := len(data.IDs)
 	idx.dims = data.Dims
 	idx.metric = data.Metric
 	idx.m = data.M
 	idx.mMax0 = data.MMax0
 	idx.efC = data.EfC
 	idx.efS = data.EfS
-	idx.entry = data.Entry
-	idx.maxL = data.MaxL
+	if idx.m <= 0 {
+		idx.m = 16
+	}
+	if idx.mMax0 <= 0 {
+		idx.mMax0 = 2 * idx.m
+	}
+	if idx.efC <= 0 {
+		idx.efC = 64
+	}
+	if idx.efS <= 0 {
+		idx.efS = 64
+	}
 	idx.ml = 1.0 / math.Log(math.Max(2, float64(idx.m)))
-	idx.nodes = make([]node, len(data.IDs))
-	idx.byID = make(map[string]int, len(data.IDs))
-	for i := range data.IDs {
+	idx.nodes = make([]node, n)
+	idx.byID = make(map[string]int, n)
+	maxL := 0
+	for i := 0; i < n; i++ {
 		idx.nodes[i] = node{id: data.IDs[i], v: data.Vecs[i], neigh: data.Neigh[i]}
 		idx.byID[data.IDs[i]] = i
+		if l := len(data.Neigh[i]) - 1; l > maxL {
+			maxL = l
+		}
+	}
+	if n == 0 {
+		idx.entry = -1
+		idx.maxL = 0
+	} else {
+		idx.entry = data.Entry
+		idx.maxL = maxL
 	}
 	if idx.rng == nil {
 		idx.rng = rand.New(rand.NewSource(42))
 	}
+	return nil
 }
 
 func (idx *Index) randomLevel() int {
@@ -310,6 +367,9 @@ func (idx *Index) better(a, b float32) bool {
 }
 
 func (idx *Index) greedy(q vector.Vector, start, layer int) int {
+	if start < 0 || start >= len(idx.nodes) {
+		return start
+	}
 	cur := start
 	curD := idx.dist(q, idx.nodes[cur].v)
 	for {
@@ -319,6 +379,9 @@ func (idx *Index) greedy(q vector.Vector, start, layer int) int {
 			neigh = idx.nodes[cur].neigh[layer]
 		}
 		for _, nb := range neigh {
+			if nb < 0 || nb >= len(idx.nodes) {
+				continue
+			}
 			d := idx.dist(q, idx.nodes[nb].v)
 			if idx.better(d, bestD) {
 				best, bestD = nb, d
@@ -340,6 +403,9 @@ func (idx *Index) bestFirst(q vector.Vector, start, ef, layer int) []int {
 	}
 	if ef < 1 {
 		ef = 1
+	}
+	if start < 0 || start >= len(idx.nodes) {
+		return nil
 	}
 	seen := map[int]struct{}{start: {}}
 	frontier := []item{{start, idx.dist(q, idx.nodes[start].v)}}
@@ -371,6 +437,9 @@ func (idx *Index) bestFirst(q vector.Vector, start, ef, layer int) []int {
 			neigh = idx.nodes[c.i].neigh[layer]
 		}
 		for _, nb := range neigh {
+			if nb < 0 || nb >= len(idx.nodes) {
+				continue
+			}
 			if _, ok := seen[nb]; ok {
 				continue
 			}

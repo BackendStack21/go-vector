@@ -2,6 +2,7 @@ package vector
 
 import (
 	"encoding/gob"
+	"fmt"
 	"io"
 	"os"
 )
@@ -58,7 +59,27 @@ func (rp *RandomProjections) persist() rpPersistData {
 	}
 }
 
-func rpFromPersist(data rpPersistData) *RandomProjections {
+func validateRPPersist(data rpPersistData) error {
+	if data.OutputDim < 0 {
+		return fmt.Errorf("vector: corrupt embedder: negative output dim %d", data.OutputDim)
+	}
+	for i, row := range data.Proj {
+		for _, e := range row {
+			if e.Dim < 0 || (data.OutputDim > 0 && e.Dim >= data.OutputDim) || (data.OutputDim == 0 && e.Dim != 0) {
+				return fmt.Errorf("vector: corrupt embedder: proj[%d] dim %d outside [0,%d)", i, e.Dim, data.OutputDim)
+			}
+		}
+	}
+	if n := len(data.IDF); n > 0 && n != len(data.Tokens) && n != len(data.Proj) {
+		return fmt.Errorf("vector: corrupt embedder: %d IDF weights, %d tokens", n, len(data.Tokens))
+	}
+	return nil
+}
+
+func rpFromPersist(data rpPersistData) (*RandomProjections, error) {
+	if err := validateRPPersist(data); err != nil {
+		return nil, err
+	}
 	proj := make([][]projEntry, len(data.Proj))
 	for i, row := range data.Proj {
 		proj[i] = make([]projEntry, len(row))
@@ -93,7 +114,7 @@ func rpFromPersist(data rpPersistData) *RandomProjections {
 		tfidf:       data.TFIDF,
 		minTokenLen: minLen,
 		idf:         data.IDF,
-	}
+	}, nil
 }
 
 // SaveEmbedder writes the RandomProjections state to a gob file.
@@ -133,5 +154,5 @@ func ReadEmbedder(r io.Reader) (*RandomProjections, error) {
 	if err := gob.NewDecoder(r).Decode(&data); err != nil {
 		return nil, err
 	}
-	return rpFromPersist(data), nil
+	return rpFromPersist(data)
 }

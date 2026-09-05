@@ -238,7 +238,7 @@
         <div class="label">dependencies</div>
       </div>
       <div class="stat">
-        <div class="num">4</div>
+        <div class="num">6</div>
         <div class="label">distance metrics</div>
       </div>
       <div class="stat">
@@ -258,7 +258,8 @@
   <div class="container">
     <div class="section-label">Core API</div>
     <h2>Everything you need for<br>vector similarity</h2>
-    <p class="lead">Ten vector operations, four distance metrics, and a production-ready in-memory vector store. All zero-allocation on read paths.</p>
+    <p class="lead">Ten vector operations, six distance metrics, and a production-ready in-memory vector store. All zero-allocation on read paths.</p>
+    <p class="lead">Optional packages add an HNSW approximate index, int8 quantization, and a mutex-wrapped store. The core <code>pkg/vector</code> API stays stdlib-only and backward compatible with v1.3 gob/JSON files.</p>
 
     <div class="grid-3" style="margin-bottom: 24px;">
       <div class="card">
@@ -273,7 +274,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         </div>
         <h3>Distance Metrics</h3>
-        <p>Cosine, Euclidean, Manhattan, Dot Product. Single-pass computation. Choose lower-is-better or higher-is-better sorting.</p>
+        <p>Cosine, Euclidean, Manhattan, Dot Product, Chebyshev, Hamming. Single-pass computation. Choose lower-is-better or higher-is-better sorting.</p>
       </div>
       <div class="card">
         <div class="card-icon purple">

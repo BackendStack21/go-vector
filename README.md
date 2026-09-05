@@ -137,7 +137,7 @@ restored.Load("/data/vectors.db")
 // Full roundtrip — metric and all data preserved
 ```
 
-Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times.
+Gob-encoded stores are compact (~4 bytes per float32 + overhead). For a 10K × 1536d store, expect ~60 MB on disk and ~200ms save/load times. `Load` / `ReadFrom` / `ReadJSONFrom` reject structurally invalid files (mismatched ID/vector/metadata lengths) and leave the store unchanged.
 
 ### Embedder Persistence
 

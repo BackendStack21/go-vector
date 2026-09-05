@@ -153,6 +153,79 @@ func TestHNSWIgnoresEmptyAndDup(t *testing.T) {
 	}
 }
 
+func TestHNSWRejectsCorruptLoad(t *testing.T) {
+	idx := New(2, vector.CosineDistance)
+	idx.Add("keep", vector.Vector{1, 0})
+	err := idx.restore(indexData{
+		IDs:   []string{"a"},
+		Vecs:  []vector.Vector{{1, 0}},
+		Neigh: [][][]int{{{99}}},
+		Entry: 0,
+	})
+	if err == nil {
+		t.Fatal("expected out-of-range neighbor error")
+	}
+	if idx.Len() != 1 || idx.Search(vector.Vector{1, 0}, 1)[0].ID != "keep" {
+		t.Fatal("failed restore must not replace existing index")
+	}
+
+	err = idx.restore(indexData{
+		IDs:   []string{"a"},
+		Vecs:  []vector.Vector{{1, 0}, {0, 1}},
+		Neigh: [][][]int{{}},
+		Entry: 0,
+	})
+	if err == nil {
+		t.Fatal("expected length mismatch error")
+	}
+
+	err = idx.restore(indexData{
+		IDs:   []string{"a"},
+		Vecs:  []vector.Vector{{1, 0}},
+		Neigh: [][][]int{{{}}},
+		Entry: 7,
+	})
+	if err == nil {
+		t.Fatal("expected entry out of range")
+	}
+
+	err = idx.restore(indexData{
+		IDs:   []string{"a", "a"},
+		Vecs:  []vector.Vector{{1, 0}, {0, 1}},
+		Neigh: [][][]int{{{}}, {{}}},
+		Entry: 0,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate id error")
+	}
+}
+
+func TestHNSWSearchSkipsBadEdges(t *testing.T) {
+	idx := New(2, vector.CosineDistance)
+	idx.Add("a", vector.Vector{1, 0})
+	idx.Add("b", vector.Vector{0, 1})
+	idx.nodes[0].neigh[0] = append(idx.nodes[0].neigh[0], 99, -1)
+	got := idx.Search(vector.Vector{1, 0}, 2)
+	if len(got) == 0 || got[0].ID != "a" {
+		t.Fatalf("search after bad edges: %+v", got)
+	}
+}
+
+func TestHNSWLoadEmpty(t *testing.T) {
+	idx := New(2, vector.CosineDistance)
+	path := filepath.Join(t.TempDir(), "empty.gob")
+	if err := idx.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	idx2 := New(2, vector.EuclideanDistance)
+	if err := idx2.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if idx2.Len() != 0 || idx2.Search(vector.Vector{1, 0}, 1) != nil {
+		t.Fatal("empty load")
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"

@@ -295,6 +295,9 @@ func (rp *RandomProjections) Embed(text string) (Vector, error) {
 			continue
 		}
 		for _, e := range rp.proj[idx] {
+			if e.dim < 0 || e.dim >= len(out) {
+				continue
+			}
 			out[e.dim] += e.val * w
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -128,6 +129,28 @@ type jsonlDoc struct {
 	Vector []float32 `json:"vector"`
 }
 
+func readJSONL(r io.Reader) ([]jsonlDoc, error) {
+	sc := bufio.NewScanner(r)
+	buf := make([]byte, 64*1024)
+	sc.Buffer(buf, 16<<20)
+	var docs []jsonlDoc
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var d jsonlDoc
+		if err := json.Unmarshal([]byte(line), &d); err != nil {
+			return nil, err
+		}
+		docs = append(docs, d)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return docs, nil
+}
+
 func indexCmd(args []string) {
 	fs := flag.NewFlagSet("index", flag.ExitOnError)
 	in := fs.String("in", "", "JSONL input ({id,text} or {id,vector})")
@@ -145,19 +168,10 @@ func indexCmd(args []string) {
 	}
 	defer f.Close()
 
-	var docs []jsonlDoc
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var d jsonlDoc
-		if err := json.Unmarshal([]byte(line), &d); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		docs = append(docs, d)
+	docs, err := readJSONL(f)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	store := vector.NewStore(vector.CosineDistance)

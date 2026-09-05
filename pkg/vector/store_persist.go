@@ -3,6 +3,7 @@ package vector
 import (
 	"encoding/gob"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 )
@@ -28,7 +29,20 @@ func (s *Store) snapshot() storeData {
 	}
 }
 
-func (s *Store) restore(data storeData) {
+func validateStoreData(data storeData) error {
+	if len(data.IDs) != len(data.Vectors) {
+		return fmt.Errorf("vector: corrupt store: %d IDs and %d vectors", len(data.IDs), len(data.Vectors))
+	}
+	if n := len(data.Metadata); n > 0 && n != len(data.IDs) {
+		return fmt.Errorf("vector: corrupt store: %d metadata rows and %d IDs", n, len(data.IDs))
+	}
+	return nil
+}
+
+func (s *Store) restore(data storeData) error {
+	if err := validateStoreData(data); err != nil {
+		return err
+	}
 	s.vectors = data.Vectors
 	s.ids = data.IDs
 	s.metric = data.Metric
@@ -43,6 +57,7 @@ func (s *Store) restore(data storeData) {
 	s.norms2 = nil
 	s.byID = nil
 	s.rebuildAux()
+	return nil
 }
 
 func hasAnyMeta(meta []map[string]string) bool {
@@ -90,8 +105,7 @@ func (s *Store) ReadFrom(r io.Reader) (int64, error) {
 	if err := gob.NewDecoder(cr).Decode(&data); err != nil {
 		return cr.n, err
 	}
-	s.restore(data)
-	return cr.n, nil
+	return cr.n, s.restore(data)
 }
 
 // WriteJSONTo JSON-encodes the store onto w (indented, same as SaveJSON).
@@ -107,8 +121,7 @@ func (s *Store) ReadJSONFrom(r io.Reader) error {
 	if err := json.NewDecoder(r).Decode(&data); err != nil {
 		return err
 	}
-	s.restore(data)
-	return nil
+	return s.restore(data)
 }
 
 // Save writes the store to a file using Go's gob encoder (compact binary format).
